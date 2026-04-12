@@ -649,7 +649,7 @@ class WanVideoUnit_SpeedControl(PipelineUnit):
 class WanVideoUnit_VACE(PipelineUnit):
     def __init__(self):
         super().__init__(
-            input_params=("vace_video", "vace_video_mask", "vace_reference_image", "vace_scale", "height", "width", "num_frames", "tiled", "tile_size", "tile_stride"),
+            input_params=("vace_video", "vace_video_mask", "vace_reference_image", "glyph_video", "vace_scale", "height", "width", "num_frames", "tiled", "tile_size", "tile_stride"),
             output_params=("vace_context", "vace_scale"),
             onload_model_names=("vae",)
         )
@@ -657,31 +657,40 @@ class WanVideoUnit_VACE(PipelineUnit):
     def process(
         self,
         pipe: WanVideoPipeline,
-        vace_video, vace_video_mask, vace_reference_image, vace_scale,
+        vace_video, vace_video_mask, vace_reference_image, glyph_video, vace_scale,
         height, width, num_frames,
         tiled, tile_size, tile_stride
     ):
-        if vace_video is not None or vace_video_mask is not None or vace_reference_image is not None:
+        if vace_video is not None or vace_video_mask is not None or vace_reference_image is not None or glyph_video is not None:
             pipe.load_models_to_device(["vae"])
             if vace_video is None:
                 vace_video = torch.zeros((1, 3, num_frames, height, width), dtype=pipe.torch_dtype, device=pipe.device)
             else:
                 vace_video = pipe.preprocess_video(vace_video)
-            
+
             if vace_video_mask is None:
                 vace_video_mask = torch.ones_like(vace_video)
             else:
                 vace_video_mask = pipe.preprocess_video(vace_video_mask, min_value=0, max_value=1)
-            
+
             inactive = vace_video * (1 - vace_video_mask) + 0 * vace_video_mask
             reactive = vace_video * vace_video_mask + 0 * (1 - vace_video_mask)
             inactive = pipe.vae.encode(inactive, device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=pipe.device)
             reactive = pipe.vae.encode(reactive, device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=pipe.device)
             vace_video_latents = torch.concat((inactive, reactive), dim=1)
-            
+
+            # TextVACE: encode glyph condition video and append to video latents
+            if glyph_video is not None:
+                glyph_video_tensor = pipe.preprocess_video(glyph_video)
+                glyph_latents = pipe.vae.encode(
+                    glyph_video_tensor, device=pipe.device,
+                    tiled=tiled, tile_size=tile_size, tile_stride=tile_stride
+                ).to(dtype=pipe.torch_dtype, device=pipe.device)
+                vace_video_latents = torch.concat((vace_video_latents, glyph_latents), dim=1)
+
             vace_mask_latents = rearrange(vace_video_mask[0,0], "T (H P) (W Q) -> 1 (P Q) T H W", P=8, Q=8)
             vace_mask_latents = torch.nn.functional.interpolate(vace_mask_latents, size=((vace_mask_latents.shape[2] + 3) // 4, vace_mask_latents.shape[3], vace_mask_latents.shape[4]), mode='nearest-exact')
-            
+
             if vace_reference_image is None:
                 pass
             else:
@@ -695,14 +704,14 @@ class WanVideoUnit_VACE(PipelineUnit):
                 for j in range(f):
                     new_vace_ref_images.append(vace_reference_image[0, :, j:j+1])
                 vace_reference_image = new_vace_ref_images
-                
+
                 vace_reference_latents = pipe.vae.encode(vace_reference_image, device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=pipe.device)
                 vace_reference_latents = torch.concat((vace_reference_latents, torch.zeros_like(vace_reference_latents)), dim=1)
                 vace_reference_latents = [u.unsqueeze(0) for u in vace_reference_latents]
 
                 vace_video_latents = torch.concat((*vace_reference_latents, vace_video_latents), dim=2)
                 vace_mask_latents = torch.concat((torch.zeros_like(vace_mask_latents[:, :, :f]), vace_mask_latents), dim=2)
-            
+
             vace_context = torch.concat((vace_video_latents, vace_mask_latents), dim=1)
             return {"vace_context": vace_context, "vace_scale": vace_scale}
         else:

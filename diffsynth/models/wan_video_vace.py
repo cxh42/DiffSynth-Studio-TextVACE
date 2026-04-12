@@ -29,6 +29,7 @@ class VaceWanModel(torch.nn.Module):
         self,
         vace_layers=(0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28),
         vace_in_dim=96,
+        glyph_channels=0,
         patch_size=(1, 2, 2),
         has_image_input=False,
         dim=1536,
@@ -39,6 +40,7 @@ class VaceWanModel(torch.nn.Module):
         super().__init__()
         self.vace_layers = vace_layers
         self.vace_in_dim = vace_in_dim
+        self.glyph_channels = glyph_channels
         self.vace_layers_mapping = {i: n for n, i in enumerate(self.vace_layers)}
 
         # vace blocks
@@ -47,8 +49,25 @@ class VaceWanModel(torch.nn.Module):
             for i in self.vace_layers
         ])
 
-        # vace patch embeddings
-        self.vace_patch_embedding = torch.nn.Conv3d(vace_in_dim, dim, kernel_size=patch_size, stride=patch_size)
+        # vace patch embeddings (input channels = vace_in_dim + glyph_channels)
+        total_in_dim = vace_in_dim + glyph_channels
+        self.vace_patch_embedding = torch.nn.Conv3d(total_in_dim, dim, kernel_size=patch_size, stride=patch_size)
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        # Handle channel expansion: if pretrained weights have fewer input channels
+        # than the model expects (due to glyph_channels), zero-pad the Conv3D weight.
+        key_w = "vace_patch_embedding.weight"
+        if key_w in state_dict and self.glyph_channels > 0:
+            pretrained_w = state_dict[key_w]
+            expected_in = self.vace_in_dim + self.glyph_channels
+            if pretrained_w.shape[1] < expected_in:
+                new_w = torch.zeros(
+                    pretrained_w.shape[0], expected_in, *pretrained_w.shape[2:],
+                    dtype=pretrained_w.dtype, device=pretrained_w.device,
+                )
+                new_w[:, :pretrained_w.shape[1]] = pretrained_w
+                state_dict[key_w] = new_w
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
 
     def forward(
         self, x, vace_context, context, t_mod, freqs,

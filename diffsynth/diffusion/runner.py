@@ -30,8 +30,19 @@ def launch_training_task(
     model.to(device=accelerator.device)
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     initialize_deepspeed_gradient_checkpointing(accelerator)
+    # Training log file
+    log_path = os.path.join(model_logger.output_path, "training_log.txt")
+    if accelerator.is_main_process:
+        os.makedirs(model_logger.output_path, exist_ok=True)
+        log_file = open(log_path, "a")
+        log_file.write(f"Training started. Epochs: {num_epochs}, LR: {learning_rate}, Steps/epoch: {len(dataloader)}\n")
+        log_file.flush()
+    else:
+        log_file = None
+
     for epoch_id in range(num_epochs):
-        for data in tqdm(dataloader):
+        progress = tqdm(dataloader, desc=f"Epoch {epoch_id+1}/{num_epochs}")
+        for step_id, data in enumerate(progress):
             with accelerator.accumulate(model):
                 optimizer.zero_grad()
                 if dataset.load_from_cache:
@@ -42,9 +53,21 @@ def launch_training_task(
                 optimizer.step()
                 model_logger.on_step_end(accelerator, model, save_steps, loss=loss)
                 scheduler.step()
+
+                # Log loss
+                loss_val = loss.item()
+                progress.set_postfix(loss=f"{loss_val:.4f}")
+                if accelerator.is_main_process and log_file is not None and (model_logger.num_steps % 10 == 0 or model_logger.num_steps <= 5):
+                    log_file.write(f"epoch={epoch_id+1} step={model_logger.num_steps} loss={loss_val:.6f}\n")
+                    log_file.flush()
         if save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
+        if accelerator.is_main_process and log_file is not None:
+            log_file.write(f"Epoch {epoch_id+1} completed. Checkpoint saved.\n")
+            log_file.flush()
     model_logger.on_training_end(accelerator, model, save_steps)
+    if log_file is not None:
+        log_file.close()
 
 
 def launch_data_process_task(
