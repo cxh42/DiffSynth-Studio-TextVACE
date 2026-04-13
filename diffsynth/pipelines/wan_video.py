@@ -217,6 +217,7 @@ class WanVideoPipeline(BasePipeline):
         vace_video: Optional[list[Image.Image]] = None,
         vace_video_mask: Optional[Image.Image] = None,
         vace_reference_image: Optional[Image.Image] = None,
+        glyph_video: Optional[list[Image.Image]] = None,
         vace_scale: Optional[float] = 1.0,
         # Animate
         animate_pose_video: Optional[list[Image.Image]] = None,
@@ -287,7 +288,7 @@ class WanVideoPipeline(BasePipeline):
             "input_video": input_video, "denoising_strength": denoising_strength,
             "control_video": control_video, "reference_image": reference_image,
             "camera_control_direction": camera_control_direction, "camera_control_speed": camera_control_speed, "camera_control_origin": camera_control_origin,
-            "vace_video": vace_video, "vace_video_mask": vace_video_mask, "vace_reference_image": vace_reference_image, "vace_scale": vace_scale,
+            "vace_video": vace_video, "vace_video_mask": vace_video_mask, "vace_reference_image": vace_reference_image, "glyph_video": glyph_video, "vace_scale": vace_scale,
             "seed": seed, "rand_device": rand_device,
             "height": height, "width": width, "num_frames": num_frames,
             "cfg_scale": cfg_scale, "cfg_merge": cfg_merge,
@@ -334,6 +335,20 @@ class WanVideoPipeline(BasePipeline):
             inputs_shared["latents"] = self.scheduler.step(noise_pred, self.scheduler.timesteps[progress_id], inputs_shared["latents"])
             if "first_frame_latents" in inputs_shared:
                 inputs_shared["latents"][:, :, 0:1] = inputs_shared["first_frame_latents"]
+
+            # Pixel-Anchored Denoising: anchor non-mask regions to original video latents
+            if hasattr(self, "_anchor_latents") and self._anchor_latents is not None:
+                anchor = self._anchor_latents
+                mask_lat = self._anchor_mask_latent
+                # Compute what the original latents look like at the next timestep
+                if progress_id + 1 < len(self.scheduler.timesteps):
+                    next_t = self.scheduler.timesteps[progress_id + 1]
+                    next_sigma = self.scheduler.sigmas[torch.argmin((self.scheduler.timesteps - next_t.cpu()).abs())]
+                    anchor_noisy = (1 - next_sigma) * anchor + next_sigma * self._anchor_noise
+                else:
+                    anchor_noisy = anchor  # final step: use clean original
+                # Blend: mask=1 means text region (keep generated), mask=0 means background (use original)
+                inputs_shared["latents"] = mask_lat * inputs_shared["latents"] + (1 - mask_lat) * anchor_noisy
         
         # VACE (TODO: remove it)
         if vace_reference_image is not None or (animate_pose_video is not None and animate_face_video is not None):
@@ -650,7 +665,7 @@ class WanVideoUnit_VACE(PipelineUnit):
     def __init__(self):
         super().__init__(
             input_params=("vace_video", "vace_video_mask", "vace_reference_image", "glyph_video", "vace_scale", "height", "width", "num_frames", "tiled", "tile_size", "tile_stride"),
-            output_params=("vace_context", "vace_scale"),
+            output_params=("vace_context", "glyph_latent", "vace_scale"),
             onload_model_names=("vae",)
         )
 
@@ -679,14 +694,14 @@ class WanVideoUnit_VACE(PipelineUnit):
             reactive = pipe.vae.encode(reactive, device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=pipe.device)
             vace_video_latents = torch.concat((inactive, reactive), dim=1)
 
-            # TextVACE: encode glyph condition video and append to video latents
+            # TextVACE: encode glyph video separately (NOT concat, used via cross-attention)
+            glyph_latent = None
             if glyph_video is not None:
                 glyph_video_tensor = pipe.preprocess_video(glyph_video)
-                glyph_latents = pipe.vae.encode(
+                glyph_latent = pipe.vae.encode(
                     glyph_video_tensor, device=pipe.device,
                     tiled=tiled, tile_size=tile_size, tile_stride=tile_stride
                 ).to(dtype=pipe.torch_dtype, device=pipe.device)
-                vace_video_latents = torch.concat((vace_video_latents, glyph_latents), dim=1)
 
             vace_mask_latents = rearrange(vace_video_mask[0,0], "T (H P) (W Q) -> 1 (P Q) T H W", P=8, Q=8)
             vace_mask_latents = torch.nn.functional.interpolate(vace_mask_latents, size=((vace_mask_latents.shape[2] + 3) // 4, vace_mask_latents.shape[3], vace_mask_latents.shape[4]), mode='nearest-exact')
@@ -713,9 +728,9 @@ class WanVideoUnit_VACE(PipelineUnit):
                 vace_mask_latents = torch.concat((torch.zeros_like(vace_mask_latents[:, :, :f]), vace_mask_latents), dim=2)
 
             vace_context = torch.concat((vace_video_latents, vace_mask_latents), dim=1)
-            return {"vace_context": vace_context, "vace_scale": vace_scale}
+            return {"vace_context": vace_context, "glyph_latent": glyph_latent, "vace_scale": vace_scale}
         else:
-            return {"vace_context": None, "vace_scale": vace_scale}
+            return {"vace_context": None, "glyph_latent": None, "vace_scale": vace_scale}
 
 
 class WanVideoUnit_VAP(PipelineUnit):
@@ -1295,6 +1310,7 @@ def model_fn_wan_video(
     y: Optional[torch.Tensor] = None,
     reference_latents = None,
     vace_context = None,
+    glyph_latent = None,
     vace_scale = 1.0,
     audio_embeds: Optional[torch.Tensor] = None,
     motion_latents: Optional[torch.Tensor] = None,
@@ -1534,6 +1550,7 @@ def model_fn_wan_video(
     if vace_context is not None:
         vace_hints = vace(
             x, vace_context, context, t_mod, freqs,
+            glyph_latent=glyph_latent,
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload
         )
