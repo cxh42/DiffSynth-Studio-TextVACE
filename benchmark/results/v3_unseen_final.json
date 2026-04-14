@@ -1,0 +1,644 @@
+{
+  "summary": {
+    "text_accuracy": {
+      "word_accuracy": 0.0,
+      "char_accuracy": 0.09522216209716211,
+      "ocr_confidence": 0.21544186023765946,
+      "detection_rate": 0.8
+    },
+    "background_preservation": {
+      "bg_psnr": 20.30816514184216,
+      "bg_ssim": 0.7681866895428893
+    },
+    "temporal_consistency": {
+      "text_temporal_ssim": 0.788134047652363,
+      "clip_frame_consistency": 0.8336602422346673
+    },
+    "vlm_quality": {
+      "vlm_score": 6.216666666666667
+    }
+  },
+  "n_samples": 20,
+  "per_sample": [
+    {
+      "id": "0004026_00000",
+      "source_text": "=TOMFERRY",
+      "target_text": "=TOMFERRI",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.14814814814814817,
+        "ocr_confidence": 0.05458754485697324,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 17.650168848039172,
+        "bg_ssim": 0.6587757208265069,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9832103143415287,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.9897760599851608
+      },
+      "vlm_quality": {
+        "vlm_score": 6.333333333333333,
+        "seen_texts": [
+          "TOMFERRI",
+          "!rowA1dNvT",
+          "=TOMFERRI"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0000304_00000",
+      "source_text": "LARGE BOX",
+      "target_text": "BIG BOX",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.0,
+        "ocr_confidence": 0.22415796568074675,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 19.83888020525922,
+        "bg_ssim": 0.7346604131617029,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.0,
+        "frames_evaluated": 0,
+        "clip_frame_consistency": 0.0
+      },
+      "vlm_quality": {
+        "vlm_score": 9.333333333333334,
+        "seen_texts": [
+          "BIG BOX",
+          "BIG BOX",
+          "BIG BOX"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0000043_00000",
+      "source_text": "Monday",
+      "target_text": "Tuesday",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.09523809523809523,
+        "ocr_confidence": 0.017920481398204395,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 24.072157015030143,
+        "bg_ssim": 0.8503154147926928,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9794077516890551,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.9947893433272839
+      },
+      "vlm_quality": {
+        "vlm_score": 8.666666666666666,
+        "seen_texts": [
+          "Tuesday",
+          "Tuesday",
+          "Tuesday"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0001003_00000",
+      "source_text": "Dress up",
+      "target_text": "Get ready",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.0,
+        "ocr_confidence": 0.019411862846678504,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 20.581345304018285,
+        "bg_ssim": 0.7923794013272089,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9236841958307169,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.988787405192852
+      },
+      "vlm_quality": {
+        "vlm_score": 9.333333333333334,
+        "seen_texts": [
+          "Get ready",
+          "Get ready",
+          "Get ready"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0000823_00000",
+      "source_text": "Kawasaki",
+      "target_text": "Honda",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.06666666666666665,
+        "ocr_confidence": 0.2535739566631117,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 19.04511219455933,
+        "bg_ssim": 0.6699074571043919,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.0,
+        "frames_evaluated": 0,
+        "clip_frame_consistency": 0.0
+      },
+      "vlm_quality": {
+        "vlm_score": 9.333333333333334,
+        "seen_texts": [
+          "Honda",
+          "Honda",
+          "Honda"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0000713_00000",
+      "source_text": "greetings",
+      "target_text": "welcome",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.0,
+        "ocr_confidence": 0.1320232335154313,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 18.27994054084411,
+        "bg_ssim": 0.6719912745659979,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.959728828723506,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.994347870349884
+      },
+      "vlm_quality": {
+        "vlm_score": 3.0,
+        "seen_texts": [
+          "CIVCIE",
+          "CIVVIE from",
+          "CIVILIZE from"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0000436_00000",
+      "source_text": "Warranty Info",
+      "target_text": "Warranty Details",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.020833333333333332,
+        "ocr_confidence": 0.15664598290321513,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 22.132805931933152,
+        "bg_ssim": 0.8376948462221655,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9800809200024373,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.9915504977107048
+      },
+      "vlm_quality": {
+        "vlm_score": 7.0,
+        "seen_texts": [
+          "Warranty Details",
+          "Warranty Details",
+          "Warranty Details"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0000253_00000",
+      "source_text": "Presentations",
+      "target_text": "Speeches",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.20833333333333334,
+        "ocr_confidence": 0.33254248270989745,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 20.629437573396785,
+        "bg_ssim": 0.8308846370312303,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9425079101931256,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.9771565496921539
+      },
+      "vlm_quality": {
+        "vlm_score": 8.666666666666666,
+        "seen_texts": [
+          "Speeches",
+          "Speeches",
+          "How To Make Speeches"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0004275_00000",
+      "source_text": "Dg Munilo",
+      "target_text": "Dg Munoz",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.20833333333333334,
+        "ocr_confidence": 0.31953936173177633,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 23.09142774418616,
+        "bg_ssim": 0.7911114480503648,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9588246693204746,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.9764083176851273
+      },
+      "vlm_quality": {
+        "vlm_score": 8.0,
+        "seen_texts": [
+          "Dg Munoz",
+          "Dg Munoz",
+          "Dg Munoz"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0008102_00000",
+      "source_text": "DIAMOND",
+      "target_text": "PLATINUM",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.23863636363636365,
+        "ocr_confidence": 0.18303417128739705,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 21.61008113446772,
+        "bg_ssim": 0.889807209258489,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9141176984457251,
+        "frames_evaluated": 15,
+        "clip_frame_consistency": 0.9732107798258464
+      },
+      "vlm_quality": {
+        "vlm_score": 4.666666666666667,
+        "seen_texts": [
+          "PHINM",
+          "PLATINUM",
+          "PHINM"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0003456_00000",
+      "source_text": "1. B 2 Bnd",
+      "target_text": "1. A 2 Amd",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.19999999999999996,
+        "ocr_confidence": 0.36837112795661264,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 21.92830816923076,
+        "bg_ssim": 0.8659432189517328,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.956041159506344,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.9862069599330425
+      },
+      "vlm_quality": {
+        "vlm_score": 3.0,
+        "seen_texts": [
+          "Amd TMB",
+          "Amd TMB",
+          "Amd TMB"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0000215_00000",
+      "source_text": "①②③④⑤⑥",
+      "target_text": "123456",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.0,
+        "ocr_confidence": 0.4209617119453859,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 20.392108316311866,
+        "bg_ssim": 0.7164120816811812,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9897626148697337,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.997357290238142
+      },
+      "vlm_quality": {
+        "vlm_score": 8.666666666666666,
+        "seen_texts": [
+          "123456",
+          "123456",
+          "123456"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0003796_00000",
+      "source_text": "Teru Teru Bozu",
+      "target_text": "Kaze Kaze Oyashi",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.041666666666666664,
+        "ocr_confidence": 0.14468973916466052,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 20.920145033652823,
+        "bg_ssim": 0.7501889797910346,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9787985571990045,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.9883499667048454
+      },
+      "vlm_quality": {
+        "vlm_score": 7.0,
+        "seen_texts": [
+          "Kaze Kaze Oyashi",
+          "Kaze Kaze Oyashi",
+          "Tera Tera Bozu"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0002381_00000",
+      "source_text": "Da",
+      "target_text": "Do",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.0,
+        "ocr_confidence": 0.0,
+        "detection_rate": 0.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 18.3394489181737,
+        "bg_ssim": 0.6384973048595952,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.0,
+        "frames_evaluated": 0,
+        "clip_frame_consistency": 0.0
+      },
+      "vlm_quality": {
+        "vlm_score": 7.0,
+        "seen_texts": [
+          "Do",
+          "Do",
+          "Do"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0000080_00000",
+      "source_text": "Ask a Spaceman!",
+      "target_text": "Ask a Scientist!",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.0,
+        "ocr_confidence": 0.0,
+        "detection_rate": 0.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 22.82649349754367,
+        "bg_ssim": 0.8073412522950392,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9703808702618153,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.9930453598499298
+      },
+      "vlm_quality": {
+        "vlm_score": 1.0,
+        "seen_texts": [
+          "How do we know the Oort cloud exists?",
+          "How do we know the Oort cloud exists?",
+          "How do we know the Oort cloud exists?"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0000050_00000",
+      "source_text": "FRUIT",
+      "target_text": "VEGETABLE",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.0,
+        "ocr_confidence": 0.0,
+        "detection_rate": 0.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 17.197357457291336,
+        "bg_ssim": 0.724710912403115,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.5882053790155805,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.954565417021513
+      },
+      "vlm_quality": {
+        "vlm_score": 3.0,
+        "seen_texts": [
+          "-YOGURT GRANOLA",
+          "MENU #1 - YOGURT GRANOLA | MENU #2 - BAGUETTE W/ SCRAMBLE EGG AND",
+          "VEGETABLE"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0000229_00000",
+      "source_text": "SOC",
+      "target_text": "SOD",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.11111111111111112,
+        "ocr_confidence": 0.19676376578972476,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 17.358591540611172,
+        "bg_ssim": 0.8554308349062921,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9077446464987207,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.9458779245615005
+      },
+      "vlm_quality": {
+        "vlm_score": 3.6666666666666665,
+        "seen_texts": [
+          "sh",
+          "S1, 100% → 810 r, 0% → 600 r",
+          "SOD"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0000142_00000",
+      "source_text": "CANUCKS",
+      "target_text": "RAPTORS",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.5238095238095238,
+        "ocr_confidence": 0.7438183674769133,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 20.12383914862894,
+        "bg_ssim": 0.7009088163924817,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.8877735373574492,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.9863506704568863
+      },
+      "vlm_quality": {
+        "vlm_score": 4.666666666666667,
+        "seen_texts": [
+          "RAPTORS",
+          "RORO",
+          "RORO"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0006518_00000",
+      "source_text": "K.R.A.M",
+      "target_text": "K.R.A.M.",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.041666666666666664,
+        "ocr_confidence": 0.7407954488264595,
+        "detection_rate": 1.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 20.13002181944947,
+        "bg_ssim": 0.7926817682599969,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9206698006548317,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.9822591990232468
+      },
+      "vlm_quality": {
+        "vlm_score": 5.0,
+        "seen_texts": [
+          "KRAM",
+          "KRAM",
+          "KRAM"
+        ],
+        "frames_evaluated": 3
+      }
+    },
+    {
+      "id": "0002771_00000",
+      "source_text": "cookies 6dozen",
+      "target_text": "cookies 6 dozen",
+      "text_accuracy": {
+        "word_accuracy": 0.0,
+        "char_accuracy": 0.0,
+        "ocr_confidence": 0.0,
+        "detection_rate": 0.0,
+        "frames_evaluated": 3
+      },
+      "background_preservation": {
+        "bg_psnr": 20.01563244421536,
+        "bg_ssim": 0.7840907989765666,
+        "frames_evaluated": 17
+      },
+      "temporal_consistency": {
+        "text_temporal_ssim": 0.9217420991372106,
+        "frames_evaluated": 16,
+        "clip_frame_consistency": 0.9531652331352234
+      },
+      "vlm_quality": {
+        "vlm_score": 7.0,
+        "seen_texts": [
+          "cookies 6 dozen",
+          "Pumpkin Pancakes 6 dozen",
+          "→ Cherry Berry Breakfast Cookies 6 dozen"
+        ],
+        "frames_evaluated": 3
+      }
+    }
+  ]
+}
