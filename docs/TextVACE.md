@@ -1,4 +1,6 @@
-# TextVACE：基于字形感知交叉注意力的视频场景文字编辑
+# VideoSTE：视频场景文字编辑
+
+> 更新日期：2026-04-14
 
 ---
 
@@ -6,275 +8,388 @@
 
 ### 1.1 任务定义
 
-**视频场景文字编辑（Video Scene Text Editing）：** 给定输入视频、文字区域掩码、编辑指令（"Change X to Y"），生成仅在文字区域发生变化的编辑后视频。要求目标文字匹配原始的字体/颜色/透视，非文字区域像素级不变，帧间时序一致。
+**视频场景文字编辑（Video Scene Text Editing, VideoSTE）**：给定输入视频和文字区域掩码，将视频中的指定文字替换为目标文字。要求目标文字匹配原始字体/颜色/透视，非文字区域像素级不变，帧间时序一致。
 
 ### 1.2 研究空白
 
 | 方向 | 代表工作 | 局限 |
 |------|---------|------|
-| 图像场景文字编辑 | TextCtrl (NeurIPS'24), FLUX-Text, GlyphMastero (CVPR'25) | 仅处理单帧，无法保证视频时序一致 |
-| 视频场景文字替换 | STRIVE (ICCV'21) | 基于GAN+style transfer，非扩散模型，5年无后续 |
-| 通用视频编辑 | VACE (ICCV'25), VideoPainter (SIGGRAPH'25) | 不理解"字形"概念，无法精确控制文字渲染 |
+| 图像场景文字编辑 | TextCtrl (NeurIPS'24), AnyText, GlyphMastero (CVPR'25) | 仅单帧，无法保证视频时序一致 |
+| 视频场景文字替换 | STRIVE (ICCV'21) | 基于 GAN，非扩散模型，5 年无后续 |
+| 通用视频编辑 | VACE (ICCV'25), VideoPainter (SIGGRAPH'25) | 不理解字形，无法精确控制文字渲染 |
+| 文字生成/渲染 | TextDiffuser-2, GlyphControl | 图像级，不处理视频时序 |
 
-**核心空白：不存在基于视频扩散模型的场景文字编辑方法。**
-
----
-
-## 2. 方法：TextVACE
-
-### 2.1 核心思路
-
-在 VACE 的视频条件注入框架中引入**专用的字形感知通路**——不是简单拼接通道，而是通过独立编码器+逐层交叉注意力让字形信息深度参与每一层的特征生成。
-
-### 2.2 架构演进
-
-#### v2（Glyph方案 — 已完成训练）
-
-```
-vace_context(96ch) → Conv3D → 15×[SelfAttn → TextCrossAttn → GlyphCrossAttn → FFN] → hints
-                                                                    ↑
-glyph_latent(16ch) → GlyphEncoder → 64 tokens ─────────────────────┘
-```
-
-- GlyphEncoder：glyph视频VAE latent → Conv3D → cross-attention pooling → 64 tokens
-- GlyphCrossAttention × 15：每层注入glyph视觉特征
-- **问题**：依赖外部渲染的glyph视频质量，OCR检测不准时模型上限被卡住
-
-#### v3（Character Encoder方案 — 当前版本）
-
-```
-vace_context(96ch) → Conv3D → 15×[SelfAttn → TextCrossAttn → CharCrossAttn → FFN] → hints
-                                                                    ↑
-"NAD" → CharTokenize → TargetTextEncoder(Embed+Transformer) ───────┘
-```
-
-三个关键组件：
-
-**① Character Tokenizer（字符分词器）**
-- 将目标文字逐字符转为token ID：`ord(char) % (vocab_size-1) + 1`
-- 支持ASCII、CJK、Cyrillic等任意Unicode字符
-- vocab_size=8192，max_len=64，0为PAD token
-
-**② TargetTextEncoder（目标文字编码器）**
-- 字符嵌入：`nn.Embedding(8192, 1536, padding_idx=0)`
-- 位置嵌入：`nn.Embedding(64, 1536)` — 编码字符顺序
-- 2层Transformer Encoder（`norm_first=True, activation='gelu'`）— 建模字符间关系
-- 零初始化输出投影 → 从预训练VACE行为渐进过渡
-- **关键**：字符级编码提供T5 subword tokenization无法保证的精确字符身份
-
-**③ ConditionCrossAttention × 15（条件交叉注意力）**
-- 每个VaceWanAttentionBlock新增一个cross-attention层
-- Q来自VACE隐状态（空间位置），K/V来自字符tokens
-- 每个空间位置查询"我这里应该关注哪个字符"
-- 输出projection zero-init
-
-### 2.3 v3设计选择的理由
-
-**为什么用字符级编码，而不是依赖T5？**
-
-| | 字符级编码（TargetTextEncoder） | T5 prompt编码 |
-|--|------|------|
-| 编码粒度 | ✅ 逐字符独立嵌入 | ❌ subword tokenization，字符边界模糊 |
-| 注入位置 | ✅ VACE blocks内（专控编辑区域） | DiT backbone（全局影响） |
-| 信息互补 | ✅ 精确字符身份 | 编辑意图的语义理解 |
-| 外部依赖 | ✅ 无（纯编码） | 无 |
-
-**为什么不用glyph视频？**
-- glyph方案依赖OCR检测精度、字体匹配、透视变换等外部渲染步骤
-- 任何一步出错都会降低模型上限
-- 字符编码方案让模型自己学习文字渲染，不受外部质量限制
-
-**三路信息汇聚（v3的核心优势）：**
-1. **T5 prompt**：语义级理解编辑意图（"Change ATP to NAD"）
-2. **TargetTextEncoder**：字符级精确标识目标文字（N-A-D）
-3. **VACE context**：原视频mask区域的视觉上下文（位置、风格、透视参考）
-
-**灵感来源（ConsID-Gen, CVPR'25）：**
-- ConsID-Gen使用双流编码（外观+几何）+ MMDiT双向注意力融合
-- 我们类比：T5提供编辑语义（类似外观流），TargetTextEncoder提供字符身份（类似几何流）
-- 两路信息在VACE blocks中汇聚，让模型同时理解"编辑什么"和"具体是哪些字符"
-
-### 2.4 参数量
-
-| 组件 | 参数量 | 可训练 | 版本 |
-|------|--------|--------|------|
-| 原始VACE（15个DiTBlock + Conv3D） | 735M | ✅ | all |
-| TargetTextEncoder（Embed+2层Transformer） | ~72M | ✅（新增） | v3 |
-| ConditionCrossAttention × 15 | ~124M | ✅（新增） | v3 |
-| GlyphEncoder（仅v2） | ~30M | ✅ | v2 |
-| DiT 1.3B（冻结） | 1300M | ❌ | all |
-| T5（冻结） | ~4800M | ❌ | all |
+**核心空白：不存在高质量的视频场景文字编辑方法和评测基准。**
 
 ---
 
-## 3. 数据与训练
+## 2. 分解式数据制作 Pipeline（核心贡献 1）
 
-### 3.1 数据
+### 2.1 方法
 
-- **训练集：** 230个视频样本，1280×720，24fps，5秒
-- 每个样本包含：原始视频、编辑后视频（GT）、文字掩码、编辑指令
-- **Glyph视频（OCR版）：** 214个用EasyOCR精准渲染，16个回退到bbox方法
-- **VLM字体识别：** ollama qwen3-vl:8b，字体分布 Arial(108), Impact(91), 其他(31)
-- **Unicode脚本检测：** CJK→Noto Sans CJK, Cyrillic→FreeSans, 数学→DejaVu
+将端到端的困难问题拆解为四个可解子任务：
 
-### 3.2 训练配置
+```
+输入：带文字的原始视频 + 编辑指令
 
-**v2（Glyph方案）：**
+Step 1: SAM3 分割目标文字区域 → 掩码视频（Mask）
+Step 2: PISCO 去除掩码区域文字 → 干净视频（Clean）
+Step 3: Nano Banana Pro 编辑第一帧文字 → 编辑后首帧
+Step 4: SAM3 分割编辑后首帧文字 → 编辑后文字片段
+Step 5: 微调 PISCO 将文字片段插入干净视频 → 编辑后视频
 
-| 参数 | 值 |
-|------|-----|
-| 模型 | Wan2.1-VACE-1.3B + GlyphEncoder + GlyphCrossAttn |
-| 步数 | 2300步/epoch × 5 epochs = 11500步 |
-| 速度 | ~3.4s/step |
-| 总时间 | ~11小时 |
+输出：高质量的编辑后视频
+```
 
-**v3（Character Encoder方案）：**
+### 2.2 核心技术：微调 PISCO 实现文字重插入
 
-| 参数 | 值 |
-|------|-----|
-| GPU | NVIDIA RTX 5090 (32GB) |
-| 模型 | Wan2.1-VACE-1.3B + TargetTextEncoder + ConditionCrossAttn |
-| 训练模式 | SFT（VACE全模块+text encoder模块可训练，DiT/T5/VAE冻结） |
-| 分辨率 | 480×832, 17帧 |
-| 步数 | 2300步/epoch × 4 epochs = 9200步 |
-| 学习率 | 5e-5, AdamW |
-| 显存 | ~25-27GB / 32GB（无glyph VAE编码，更省显存） |
-| 预计时间 | ~6-7小时 |
+- PISCO 原本是视频文字**去除**模型（有文字→干净）
+- 用 (干净视频, 原视频) 数据对**反向微调**，学会**插入**文字
+- 去除和插入是**对称任务**，同一架构双向使用
+- 微调后能将编辑文字片段高质量融合进干净视频，保持光影/透视/时序一致
+
+### 2.3 数据产出与独创性
+
+产出 **230 个高质量视频文字编辑数据对**（1280×720, 24fps, ~5s），覆盖英文/中文/韩文/符号。另有 240 个未见视频用于泛化测试。
+
+**这是全世界唯一的高质量真实视频文字编辑配对数据。** 现有方法全部使用合成数据训练（SynthText 引擎渲染），质量远低于真实数据。
+
+| 方法 | 数据类型 | 质量 |
+|------|---------|------|
+| SRNet / MOSTEL / TextCtrl | 合成图像对 | 低-中：无真实光影/透视 |
+| AnyText / TextDiffuser | 真实图（非配对） | 无编辑前后配对 |
+| **Ours** | **真实视频配对** | **高：保留真实光影/透视/时序** |
 
 ---
 
-## 4. 实验结果
+## 3. VideoSTE-Bench 评测基准（核心贡献 2）
 
-### 4.1 第一版实验（glyph concat方案，bbox渲染）
+### 3.1 数据集构成
 
-使用简单的通道拼接（vace_in_dim 96→112）+ mask bbox内居中渲染glyph。
+| 子集 | 数量 | 用途 | 有 GT |
+|------|------|------|-------|
+| Test-Paired | 230 个视频对 | 自动评测（PSNR/SSIM/OCR） | 有 |
+| Test-Wild | 240 个视频 | 人工评测 / VLM 评测 | 无 |
 
-**训练集样本推理：**
+### 3.2 五维度评测体系
 
-| 样本 | 编辑 | PSNR | SSIM |
-|------|------|------|------|
-| 0000007 | ATP→NAD | 17.21 | 0.6816 |
-| 0000051 | TFLCAR→CARLIFE | 21.90 | 0.8278 |
-| 0001273 | 慈→善 | 18.45 | 0.6982 |
+借鉴 VBench（多维度分解）、Physics-IQ（真实 GT 对比）、LegiT（文字可读性）的设计思想：
 
-**发现：**
-- ✅ 文字编辑能力验证成功，目标文字清晰可读
-- ✅ 泛化能力存在——训练时没见过的目标文字（GDP、AMP、福、道）也能渲染
-- ✅ 未见视频上也有编辑效果（VLM自动识别原文+生成替换指令）
-- ❌ 背景保真度不足（PSNR 17-22，理想应>30）
-- ❌ Pixel-Anchored Denoising（推理时锚定非mask区域）效果微弱（+0.3dB），**结论：背景保真需从训练端解决**
+| 维度 | 衡量什么 | 核心指标 | 灵感来源 |
+|------|---------|---------|---------|
+| **Text Accuracy** | 文字是否正确 | PARSeq OCR Word/Char Accuracy | LegiT |
+| **Text Legibility** | 文字是否清晰 | OCR 置信度 + MUSIQ 质量分 | LegiT |
+| **Background Preservation** | 背景是否不变 | 非 mask 区域 PSNR/SSIM/LPIPS | Physics-IQ |
+| **Temporal Consistency** | 帧间是否稳定 | 帧间 SSIM + CLIP 一致性 | VBench |
+| **Overall Realism** | 整体是否自然 | FID + VLM 2AFC 判断 | Physics-IQ |
 
-### 4.2 v2 GlyphCrossAttention 实验结果
+### 3.3 按类别分析
 
-- 5 epochs训练完成，最终loss: 0.005221
-- 30个未见视频推理结果在 `outputs/textvace_inference/unseen_final/`
-- **发现**：效果受glyph视频渲染质量限制，OCR检测不准的样本效果差
+| 分类维度 | 类别 | 分析目的 |
+|---------|------|--------|
+| 文字类型 | Latin / CJK / Symbol | 不同文字系统的难度差异 |
+| 文字长度 | 短(1-3) / 中(4-10) / 长(10+) | 文字复杂度的影响 |
+| 运动程度 | 静态 / 轻微 / 明显 | 运动对编辑质量的影响 |
 
-### 4.3 v3 Character Encoder 方案（当前进行中）
+详细设计见 [benchmark_design.md](benchmark_design.md)
 
-| 改进 | 状态 | 预期效果 |
-|------|------|---------|
-| TargetTextEncoder + ConditionCrossAttn | 🔄 训练中 | 字符级精确编码，不依赖外部渲染 |
-| Mask-weighted loss | 📋 待做 | 提升背景保真度 |
-| 扩充训练数据 | 📋 待做 | 提升整体质量 |
+---
+
+## 4. 端到端方法探索（论文中的消融实验）
+
+### 4.1 方案 v1：Glyph 通道拼接（1.3B）
+
+将 glyph 视频 VAE 编码拼接到 VACE 输入通道（96ch→112ch）。
+
+**结果**：文字部分可读，背景保真不足（PSNR 17-22）。Pixel-Anchored Denoising 无明显效果。
+
+### 4.2 方案 v2：Glyph Cross-Attention（1.3B, 已完成）
+
+```
+glyph_video → VAE → GlyphEncoder(Conv3D + pooling → 64 tokens)
+                                      ↓
+vace_context → Conv3D → 15×[SelfAttn → TextCrossAttn → GlyphCrossAttn → FFN]
+```
+
+- 训练：5 epochs × 2300 steps，~11 小时，RTX 5090 (1.3B)
+- 最终 loss: 0.005221
+- 30 个未见视频推理完成
+- **结论**：效果受限于 glyph 渲染质量（OCR 定位偏差、字体匹配不准、透视变换误差）
+
+### 4.3 方案 v3：Character Encoder（1.3B, 已完成）
+
+```
+"NAD" → CharTokenize → TargetTextEncoder(Embed + 2层Transformer) → 64 tokens
+                                                                      ↓
+vace_context → Conv3D → 15×[SelfAttn → TextCrossAttn → CharCrossAttn → FFN]
+```
+
+- TargetTextEncoder ~72M + ConditionCrossAttention ×15 ~142M
+- 训练：3 epochs × 2300 steps，~5.4 小时，RTX 5090 (1.3B)
+- **结论**：文字完全不可辨认。原因：230 样本不足以让模型学会字符→视觉渲染映射（需百万级数据）。调研确认不存在预训练的文字→视觉特征编码器。
+
+### 4.4 方案 v2-14B：Glyph Cross-Attention（14B, 计划中）
+
+在新机器上用 14B 模型 + 49 帧重新训练 v2 方案，验证更大模型是否能改善效果。
+
+详见第 6 节训练指南。
+
+### 4.5 三方案对比总结
+
+| | 分解式 Pipeline | Glyph-VACE (v2) | CharEncoder (v3) |
+|--|:---:|:---:|:---:|
+| 文字可读性 | 高 | 中（部分可辨认） | 极低（乱码） |
+| 背景保真 | 高 | 低 | 低 |
+| 时序一致 | 高 | 中 | 中 |
+| 数据需求 | 少 | 中（230 不够理想） | 极大（需百万级） |
+| 核心瓶颈 | 速度慢 | glyph 质量天花板 | 数据量不足 |
 
 ---
 
 ## 5. 论文规划
 
-### 5.1 标题（草案）
+### 5.1 定位
 
-**"TextVACE: Glyph-Aware Cross-Attention for Video Scene Text Editing"**
+**NeurIPS 2026 主赛道**，偏 Benchmark + Method
 
-### 5.2 贡献点
+**标题方向**：
+> "VideoSTE-Bench: A Real-World Benchmark for Video Scene Text Editing via Decomposed Segmentation, Removal, and Reinsertion"
 
-1. **任务+Benchmark：** 首个基于视频扩散模型的场景文字编辑任务定义，含专用数据集
-2. **OCR-Driven Temporal Glyph Conditioning：** OCR检测→透视跟踪→字形渲染的几何条件生成pipeline，解决视频文字的时序几何变化
-3. **Glyph-Aware Cross-Attention：** 在VACE block中引入独立的字形交叉注意力通路，通过GlyphEncoder压缩字形特征+逐层cross-attention注入
-4. **全面实验：** 消融实验验证各组件，和STRIVE/TextCtrl-per-frame/vanilla VACE对比
+### 5.2 篇幅分配
 
-### 5.3 对比实验计划
+| 部分 | 比例 | 内容 |
+|------|------|------|
+| 数据制作 Pipeline | 40% | 分解式方法 + PISCO 微调 + 数据质量分析 |
+| 评测基准 | 40% | 五维度评测体系 + Baseline 对比 + 按类别分析 |
+| 端到端方法探索 | 20% | Glyph-VACE / CharEncoder-VACE 消融 + 分析 |
+
+### 5.3 贡献点
+
+1. **分解式方法**：首个实用的 VideoSTE 框架（分割→去除→编辑→重插入）
+2. **视频文字重插入**：反向微调 PISCO 实现文字高质量融合（核心技术）
+3. **VideoSTE-Bench**：首个真实视频文字编辑 benchmark（230 对 + 5 维度评测）
+4. **系统性分析**：分解式 vs 端到端的范式对比，验证数据受限场景下的最优策略
+
+### 5.4 对比实验
 
 | 方法 | 类型 |
 |------|------|
-| STRIVE (ICCV'21) | 唯一前作（GAN方法） |
-| TextCtrl逐帧应用 | 图像STE方法的简单扩展 |
-| VACE原始微调（无glyph） | 通用视频编辑baseline |
-| TextVACE-concat（glyph通道拼接） | 消融：简单注入方式 |
-| **TextVACE（完整方法）** | 我们的方法 |
-
-### 5.4 消融实验
-
-- **v3 vs v2**：Character Encoder vs Glyph Encoder（核心对比）
-- 有/无 ConditionCrossAttention（只靠T5 prompt vs 加字符编码）
-- 不同Transformer层数（1/2/3层）
-- 不同vocab策略（char-level vs subword）
-- 有/无 GlyphCrossAttention（v2消融）
-- 有/无 OCR精准渲染（v2消融）
-- 不同训练数据量
+| **Ours（分解式 Pipeline）** | 主方法 |
+| TextCtrl 逐帧 | Baseline（图像 STE 逐帧） |
+| VACE 微调（无 glyph） | Baseline（通用视频编辑） |
+| Glyph-VACE (v2, 1.3B) | 消融（端到端 + glyph） |
+| Glyph-VACE (v2, 14B) | 消融（更大模型） |
+| CharEncoder-VACE (v3) | 消融（端到端 + 字符编码） |
 
 ---
 
-## 6. 文件结构
+## 6. 14B Glyph-VACE 训练指南（新机器）
 
-```
-DiffSynth-Studio-TextVACE/
-├── data/
-│   ├── raw/{original_videos, edited_videos, text_masks, edit_instructions}  (230样本)
-│   ├── processed/{glyph_videos, font_info, parsed_records.json}            (OCR版glyph)
-│   ├── inference_raw/{target_video, mask_video}                            (470样本，240未见)
-│   ├── inference_processed/{dilated_masks, glyph_videos, inference_records.json}
-│   └── metadata.csv                                                        (训练元数据)
-├── diffsynth/
-│   ├── models/wan_video_vace.py      ← GlyphEncoder + GlyphCrossAttention + VaceWanModel
-│   ├── pipelines/wan_video.py        ← glyph_video独立编码, glyph_latent传入VACE
-│   └── configs/model_configs.py      ← glyph_channels=16
-├── scripts/
-│   ├── prepare_textvace_data.py      # 数据准备（指令解析+glyph渲染v1）
-│   ├── recognize_fonts.py            # VLM字体识别
-│   ├── render_glyph_ocr.py           # OCR驱动的精准glyph渲染v2
-│   ├── prepare_inference_data.py     # 推理数据准备（去重+膨胀mask+VLM识别）
-│   ├── inference_textvace.py         # 推理脚本
-│   ├── inference_novel_text.py       # 新文字泛化测试
-│   ├── inference_unseen.py           # 未见视频推理
-│   └── train_textvace.sh             # 训练启动脚本
-├── models/train/TextVACE_sft/        # Checkpoints + training_log.txt
-├── outputs/textvace_inference/       # 推理结果
-│   ├── train_samples/                # 训练集推理
-│   ├── novel_text/                   # 同视频新文字
-│   └── unseen_videos/                # 全新视频
-├── logs/                             # 训练/推理日志
-└── docs/TextVACE.md                  # 本文档
-```
-
----
-
-## 7. 使用指南
+### 6.1 环境准备
 
 ```bash
-# === v3 Character Encoder 方案（当前） ===
-# 数据准备：无需额外步骤，metadata_v3.csv直接使用原始数据
+# 1. 克隆代码
+git clone <repo_url> DiffSynth-Studio-TextVACE
+cd DiffSynth-Studio-TextVACE
 
-# 训练
+# 2. 创建 conda 环境
+conda create -n DiffSynth-Studio python=3.12
 conda activate DiffSynth-Studio
-bash scripts/train_textvace_v3.sh
-tail -f models/train/TextVACE_v3_sft/training_log.txt
+pip install -e .
+pip install accelerate
 
-# 推理
-conda run -n DiffSynth-Studio python scripts/inference_textvace.py \
-    --checkpoint models/train/TextVACE_v3_sft/epoch-3.safetensors
+# 3. 下载 14B VACE 模型
+# 从 HuggingFace 下载 Wan-AI/Wan2.1-VACE-14B
+# 需要文件：
+#   diffusion_pytorch_model.safetensors (或分片 diffusion_pytorch_model-*.safetensors)
+#   models_t5_umt5-xxl-enc-bf16.pth
+#   Wan2.1_VAE.pth
+python -c "from huggingface_hub import snapshot_download; snapshot_download('Wan-AI/Wan2.1-VACE-14B')"
 
-# === v2 Glyph 方案（已完成） ===
-# 数据准备
-conda run -n DiffSynth-Studio python scripts/prepare_textvace_data.py
-conda run -n DiffSynth-Studio python scripts/recognize_fonts.py
-conda run -n DiffSynth-Studio python scripts/render_glyph_ocr.py
-
-# 训练
-bash scripts/train_textvace.sh
-tail -f models/train/TextVACE_sft/training_log.txt
-
-# 推理
-conda run -n DiffSynth-Studio python scripts/inference_textvace.py \
-    --checkpoint models/train/TextVACE_sft/epoch-4.safetensors
+# 4. 解压数据
+# 将 data.tar.gz 解压到项目根目录
+tar xzf data.tar.gz
 ```
+
+### 6.2 修改配置
+
+**关键：修改 14B VACE 的 model_configs.py，添加 glyph_channels**
+
+找到 `diffsynth/configs/model_configs.py` 中 hash 为 `7a513e1f257a861512b1afd387a8ecd9` 的 `wan_video_vace` 条目：
+
+```python
+# 修改前：
+{
+    "model_hash": "7a513e1f257a861512b1afd387a8ecd9",
+    "model_name": "wan_video_vace",
+    "model_class": "diffsynth.models.wan_video_vace.VaceWanModel",
+    "extra_kwargs": {
+        'vace_layers': (0, 5, 10, 15, 20, 25, 30, 35),
+        'vace_in_dim': 96,
+        'patch_size': (1, 2, 2),
+        'has_image_input': False,
+        'dim': 5120,
+        'num_heads': 40,
+        'ffn_dim': 13824,
+        'eps': 1e-06
+    },
+    "state_dict_converter": "..."
+},
+
+# 修改后（添加 glyph_channels）：
+{
+    "model_hash": "7a513e1f257a861512b1afd387a8ecd9",
+    "model_name": "wan_video_vace",
+    "model_class": "diffsynth.models.wan_video_vace.VaceWanModel",
+    "extra_kwargs": {
+        'vace_layers': (0, 5, 10, 15, 20, 25, 30, 35),
+        'vace_in_dim': 96,
+        'glyph_channels': 16,             # ← 添加这行
+        'patch_size': (1, 2, 2),
+        'has_image_input': False,
+        'dim': 5120,
+        'num_heads': 40,
+        'ffn_dim': 13824,
+        'eps': 1e-06
+    },
+    "state_dict_converter": "..."
+},
+```
+
+注意 14B 与 1.3B 的区别：
+- dim: 5120 vs 1536
+- num_heads: 40 vs 12
+- vace_layers: 8 层 vs 15 层
+- GlyphEncoder 和 ConditionCrossAttention 会自动用 dim=5120 初始化
+
+### 6.3 数据准备
+
+数据已在 `data/` 目录中。确认结构：
+
+```
+data/
+├── raw/
+│   ├── original_videos/     (230 个原始视频)
+│   ├── edited_videos/       (230 个编辑后视频)
+│   ├── text_masks/          (230 个掩码视频)
+│   └── edit_instructions/   (编辑指令)
+├── processed/
+│   ├── glyph_videos/        (214 个 OCR 渲染的 glyph 视频)
+│   ├── font_info/           (字体信息)
+│   └── parsed_records.json  (解析后的记录)
+├── metadata.csv             (v2 glyph 方案训练用)
+└── metadata_v3.csv          (v3 字符编码方案训练用)
+```
+
+v2 训练使用 `metadata.csv`，其中每行包含：
+```
+video,vace_video,vace_video_mask,glyph_video,prompt
+raw/edited_videos/xxx.mp4,raw/original_videos/xxx.mp4,raw/text_masks/xxx.mp4,processed/glyph_videos/xxx.mp4,Change ATP to NAD
+```
+
+### 6.4 训练脚本
+
+创建 `scripts/train_textvace_14b.sh`：
+
+```bash
+#!/bin/bash
+# TextVACE v2 (Glyph) - 14B Model Training
+# 480P, 49 frames
+# 需要显存估算：14B DiT(冻结) + VACE(~2.4B可训练) + GlyphEncoder + CrossAttn
+# 建议至少 80GB VRAM (A100/H100)，可能需要多卡
+
+MODEL_DIR="<14B模型路径，例如 ~/.cache/huggingface/hub/models--Wan-AI--Wan2.1-VACE-14B/snapshots/xxx>"
+
+mkdir -p logs
+
+export PYTHONUNBUFFERED=1
+
+accelerate launch examples/wanvideo/model_training/train.py \
+  --dataset_base_path data/ \
+  --dataset_metadata_path data/metadata.csv \
+  --data_file_keys "video,vace_video,vace_video_mask,glyph_video" \
+  --height 480 \
+  --width 832 \
+  --num_frames 49 \
+  --dataset_repeat 10 \
+  --model_paths "[\"${MODEL_DIR}/diffusion_pytorch_model.safetensors\",\"${MODEL_DIR}/models_t5_umt5-xxl-enc-bf16.pth\",\"${MODEL_DIR}/Wan2.1_VAE.pth\"]" \
+  --learning_rate 5e-5 \
+  --num_epochs 5 \
+  --remove_prefix_in_ckpt "pipe.vace." \
+  --output_path "./models/train/TextVACE_14B_sft" \
+  --trainable_models "vace" \
+  --extra_inputs "vace_video,vace_video_mask,glyph_video" \
+  --use_gradient_checkpointing_offload \
+  --initialize_model_on_cpu
+```
+
+**注意事项**：
+- `MODEL_DIR` 需改为实际 14B 模型路径
+- 如果模型文件是分片的（`diffusion_pytorch_model-00001-of-00006.safetensors`），传所有分片路径或模型目录
+- 49 帧 + 14B 模型显存需求很大，可能需要：
+  - 单卡 80GB（A100/H100）+ gradient checkpointing offload
+  - 或多卡并行（accelerate 会自动处理）
+  - 如果 OOM：降到 33 帧（`--num_frames 33`）或降分辨率
+- 清除 pycache：`find . -name "__pycache__" -exec rm -rf {} +`
+
+### 6.5 训练命令
+
+```bash
+# 清除缓存（重要！确保使用最新代码）
+find . -name "__pycache__" -exec rm -rf {} +
+
+# 启动训练
+conda activate DiffSynth-Studio
+bash scripts/train_textvace_14b.sh 2>&1 | tee logs/train_14b.log
+
+# 监控
+tail -f models/train/TextVACE_14B_sft/training_log.txt
+nvidia-smi -l 5  # 监控显存
+```
+
+### 6.6 推理
+
+```bash
+python scripts/inference_textvace.py \
+    --checkpoint models/train/TextVACE_14B_sft/epoch-4.safetensors \
+    --num_frames 49
+```
+
+推理脚本中的 `MODEL_DIR` 也需要改为 14B 模型路径。
+
+---
+
+## 7. 已有资产
+
+### 模型检查点
+| 检查点 | 方案 | 模型 | 位置 |
+|--------|------|------|------|
+| epoch-0 ~ epoch-4 | v2 Glyph | 1.3B | `models/train/TextVACE_sft/` |
+| epoch-0 ~ epoch-2 | v3 CharEncoder | 1.3B | `models/train/TextVACE_v3_sft/` |
+| 待训练 | v2 Glyph | 14B | `models/train/TextVACE_14B_sft/` |
+
+### 推理结果
+| 结果 | 样本数 | 位置 |
+|------|--------|------|
+| v2 (1.3B) 未见视频 | 30 | `outputs/textvace_inference/unseen_final/` |
+| v3 (1.3B) 训练集 + 未见 | 30 | `outputs/textvace_v3_inference/` |
+
+### 关键代码文件
+| 文件 | 说明 |
+|------|------|
+| `diffsynth/models/wan_video_vace.py` | GlyphEncoder + TargetTextEncoder + ConditionCrossAttn |
+| `diffsynth/pipelines/wan_video.py` | Pipeline（支持 glyph_video 和 target_text） |
+| `diffsynth/configs/model_configs.py` | 模型配置（1.3B 已改，14B 需手动改） |
+| `scripts/render_glyph_ocr.py` | OCR 驱动的 glyph 渲染 |
+| `scripts/train_textvace.sh` | 1.3B v2 训练脚本 |
+| `scripts/train_textvace_v3.sh` | 1.3B v3 训练脚本 |
+
+---
+
+## 8. TODO
+
+- [ ] **14B 训练**：在新机器上用 v2 方案训练 14B 模型（480p, 49帧）
+- [ ] **量化评测**：在 230 对上跑 benchmark 评测 pipeline
+- [ ] **Baseline**：TextCtrl 逐帧 / VACE 原始微调
+- [ ] **论文写作**：Pipeline 方法 + Benchmark 设计 + 实验
+- [ ] **人工评测**：设计 MOS 评分问卷
