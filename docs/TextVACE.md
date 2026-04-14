@@ -26,61 +26,84 @@
 
 在 VACE 的视频条件注入框架中引入**专用的字形感知通路**——不是简单拼接通道，而是通过独立编码器+逐层交叉注意力让字形信息深度参与每一层的特征生成。
 
-### 2.2 架构设计
+### 2.2 架构演进
+
+#### v2（Glyph方案 — 已完成训练）
 
 ```
-原始 VACE:
-  vace_context(96ch) → Conv3D → 15×[SelfAttn → TextCrossAttn → FFN] → hints → 注入DiT
-
-TextVACE (ours):
-  vace_context(96ch) → Conv3D → 15×[SelfAttn → TextCrossAttn → GlyphCrossAttn → FFN] → hints
+vace_context(96ch) → Conv3D → 15×[SelfAttn → TextCrossAttn → GlyphCrossAttn → FFN] → hints
                                                                     ↑
-  glyph_latent(16ch) → GlyphEncoder → 64 tokens ───────────────────┘
+glyph_latent(16ch) → GlyphEncoder → 64 tokens ─────────────────────┘
+```
+
+- GlyphEncoder：glyph视频VAE latent → Conv3D → cross-attention pooling → 64 tokens
+- GlyphCrossAttention × 15：每层注入glyph视觉特征
+- **问题**：依赖外部渲染的glyph视频质量，OCR检测不准时模型上限被卡住
+
+#### v3（Character Encoder方案 — 当前版本）
+
+```
+vace_context(96ch) → Conv3D → 15×[SelfAttn → TextCrossAttn → CharCrossAttn → FFN] → hints
+                                                                    ↑
+"NAD" → CharTokenize → TargetTextEncoder(Embed+Transformer) ───────┘
 ```
 
 三个关键组件：
 
-**① GlyphEncoder（字形编码器）**
-- 输入：glyph视频的VAE latent (16ch)
-- `Conv3D(16→1536)` patch embedding → 空间特征序列
-- Cross-attention pooling → 压缩为64个token
+**① Character Tokenizer（字符分词器）**
+- 将目标文字逐字符转为token ID：`ord(char) % (vocab_size-1) + 1`
+- 支持ASCII、CJK、Cyrillic等任意Unicode字符
+- vocab_size=8192，max_len=64，0为PAD token
+
+**② TargetTextEncoder（目标文字编码器）**
+- 字符嵌入：`nn.Embedding(8192, 1536, padding_idx=0)`
+- 位置嵌入：`nn.Embedding(64, 1536)` — 编码字符顺序
+- 2层Transformer Encoder（`norm_first=True, activation='gelu'`）— 建模字符间关系
+- 零初始化输出投影 → 从预训练VACE行为渐进过渡
+- **关键**：字符级编码提供T5 subword tokenization无法保证的精确字符身份
+
+**③ ConditionCrossAttention × 15（条件交叉注意力）**
+- 每个VaceWanAttentionBlock新增一个cross-attention层
+- Q来自VACE隐状态（空间位置），K/V来自字符tokens
+- 每个空间位置查询"我这里应该关注哪个字符"
 - 输出projection zero-init
 
-**② GlyphCrossAttention × 15（字形交叉注意力）**
-- 每个VaceWanAttentionBlock新增一个cross-attention层
-- Q来自VACE隐状态，K/V来自glyph tokens
-- 让每个空间位置查询"我这里应该渲染glyph的哪个部分"
-- 输出projection zero-init → 从预训练行为渐进过渡
+### 2.3 v3设计选择的理由
 
-**③ OCR-Driven Geometric Glyph Rendering（OCR驱动的几何字形渲染）**
-- EasyOCR逐帧检测原始文字 → 精确4角点坐标（位置/大小/旋转/透视）
-- 用匹配字体渲染目标文字 → 透视变换到检测角点
-- 帧间平滑消除检测抖动
-- VLM字体识别（ollama qwen3-vl）匹配原始字体风格
+**为什么用字符级编码，而不是依赖T5？**
 
-### 2.3 设计选择的理由
+| | 字符级编码（TargetTextEncoder） | T5 prompt编码 |
+|--|------|------|
+| 编码粒度 | ✅ 逐字符独立嵌入 | ❌ subword tokenization，字符边界模糊 |
+| 注入位置 | ✅ VACE blocks内（专控编辑区域） | DiT backbone（全局影响） |
+| 信息互补 | ✅ 精确字符身份 | 编辑意图的语义理解 |
+| 外部依赖 | ✅ 无（纯编码） | 无 |
 
-**为什么用glyph视觉特征做cross-attention，而不是目标文本语义特征？**
+**为什么不用glyph视频？**
+- glyph方案依赖OCR检测精度、字体匹配、透视变换等外部渲染步骤
+- 任何一步出错都会降低模型上限
+- 字符编码方案让模型自己学习文字渲染，不受外部质量限制
 
-| | Glyph视觉特征 | 目标文本语义（T5编码） |
-|--|--------------|-------------------|
-| 空间信息 | ✅ 包含每个字符的精确位置/大小 | ❌ 无空间信息 |
-| 和已有text cross-attn的区别 | ✅ 完全不同的信息 | ❌ T5已经编码了完整prompt |
-| 时序追踪 | ✅ 随视频帧变化（反映运动） | ❌ 每帧相同 |
+**三路信息汇聚（v3的核心优势）：**
+1. **T5 prompt**：语义级理解编辑意图（"Change ATP to NAD"）
+2. **TargetTextEncoder**：字符级精确标识目标文字（N-A-D）
+3. **VACE context**：原视频mask区域的视觉上下文（位置、风格、透视参考）
 
-**为什么不concat到vace_context而是用独立cross-attention？**
-- Concat方案：glyph的16通道和inactive/reactive/mask的96通道混在Conv3D入口，字形信息在后续层被稀释
-- Cross-attention方案：字形信息在每一层被独立查询和注入，不与其他条件信号混淆
+**灵感来源（ConsID-Gen, CVPR'25）：**
+- ConsID-Gen使用双流编码（外观+几何）+ MMDiT双向注意力融合
+- 我们类比：T5提供编辑语义（类似外观流），TargetTextEncoder提供字符身份（类似几何流）
+- 两路信息在VACE blocks中汇聚，让模型同时理解"编辑什么"和"具体是哪些字符"
 
 ### 2.4 参数量
 
-| 组件 | 参数量 | 可训练 |
-|------|--------|--------|
-| 原始VACE（15个DiTBlock + Conv3D） | 735M | ✅ |
-| GlyphEncoder | ~30M | ✅（新增） |
-| GlyphCrossAttention × 15 | ~124M | ✅（新增） |
-| DiT 1.3B（冻结） | 1300M | ❌ |
-| T5（冻结） | ~4800M | ❌ |
+| 组件 | 参数量 | 可训练 | 版本 |
+|------|--------|--------|------|
+| 原始VACE（15个DiTBlock + Conv3D） | 735M | ✅ | all |
+| TargetTextEncoder（Embed+2层Transformer） | ~72M | ✅（新增） | v3 |
+| ConditionCrossAttention × 15 | ~124M | ✅（新增） | v3 |
+| GlyphEncoder（仅v2） | ~30M | ✅ | v2 |
+| DiT 1.3B（冻结） | 1300M | ❌ | all |
+| T5（冻结） | ~4800M | ❌ | all |
 
 ---
 
@@ -96,17 +119,27 @@ TextVACE (ours):
 
 ### 3.2 训练配置
 
+**v2（Glyph方案）：**
+
+| 参数 | 值 |
+|------|-----|
+| 模型 | Wan2.1-VACE-1.3B + GlyphEncoder + GlyphCrossAttn |
+| 步数 | 2300步/epoch × 5 epochs = 11500步 |
+| 速度 | ~3.4s/step |
+| 总时间 | ~11小时 |
+
+**v3（Character Encoder方案）：**
+
 | 参数 | 值 |
 |------|-----|
 | GPU | NVIDIA RTX 5090 (32GB) |
-| 模型 | Wan2.1-VACE-1.3B + GlyphEncoder + GlyphCrossAttn |
-| 训练模式 | SFT（VACE全模块+glyph模块可训练，DiT/T5/VAE冻结） |
+| 模型 | Wan2.1-VACE-1.3B + TargetTextEncoder + ConditionCrossAttn |
+| 训练模式 | SFT（VACE全模块+text encoder模块可训练，DiT/T5/VAE冻结） |
 | 分辨率 | 480×832, 17帧 |
-| 步数 | 2300步/epoch × 5 epochs = 11500步 |
+| 步数 | 2300步/epoch × 4 epochs = 9200步 |
 | 学习率 | 5e-5, AdamW |
-| 显存 | ~29GB / 32GB |
-| 速度 | ~3.4s/step |
-| 预计时间 | ~11小时 |
+| 显存 | ~25-27GB / 32GB（无glyph VAE编码，更省显存） |
+| 预计时间 | ~6-7小时 |
 
 ---
 
@@ -131,12 +164,17 @@ TextVACE (ours):
 - ❌ 背景保真度不足（PSNR 17-22，理想应>30）
 - ❌ Pixel-Anchored Denoising（推理时锚定非mask区域）效果微弱（+0.3dB），**结论：背景保真需从训练端解决**
 
-### 4.2 改进方向（当前进行中）
+### 4.2 v2 GlyphCrossAttention 实验结果
+
+- 5 epochs训练完成，最终loss: 0.005221
+- 30个未见视频推理结果在 `outputs/textvace_inference/unseen_final/`
+- **发现**：效果受glyph视频渲染质量限制，OCR检测不准的样本效果差
+
+### 4.3 v3 Character Encoder 方案（当前进行中）
 
 | 改进 | 状态 | 预期效果 |
 |------|------|---------|
-| OCR精准glyph渲染（透视变换） | ✅ 已完成 | glyph和原文精确对齐 |
-| GlyphCrossAttention架构 | 🔄 训练中 | 字形信息逐层深度注入 |
+| TargetTextEncoder + ConditionCrossAttn | 🔄 训练中 | 字符级精确编码，不依赖外部渲染 |
 | Mask-weighted loss | 📋 待做 | 提升背景保真度 |
 | 扩充训练数据 | 📋 待做 | 提升整体质量 |
 
@@ -167,10 +205,12 @@ TextVACE (ours):
 
 ### 5.4 消融实验
 
-- 有/无 GlyphCrossAttention
-- 有/无 OCR精准渲染（OCR vs bbox）
-- 有/无 VLM字体匹配
-- 不同glyph_num_tokens（32/64/128）
+- **v3 vs v2**：Character Encoder vs Glyph Encoder（核心对比）
+- 有/无 ConditionCrossAttention（只靠T5 prompt vs 加字符编码）
+- 不同Transformer层数（1/2/3层）
+- 不同vocab策略（char-level vs subword）
+- 有/无 GlyphCrossAttention（v2消融）
+- 有/无 OCR精准渲染（v2消融）
 - 不同训练数据量
 
 ---
@@ -212,15 +252,27 @@ DiffSynth-Studio-TextVACE/
 ## 7. 使用指南
 
 ```bash
+# === v3 Character Encoder 方案（当前） ===
+# 数据准备：无需额外步骤，metadata_v3.csv直接使用原始数据
+
+# 训练
+conda activate DiffSynth-Studio
+bash scripts/train_textvace_v3.sh
+tail -f models/train/TextVACE_v3_sft/training_log.txt
+
+# 推理
+conda run -n DiffSynth-Studio python scripts/inference_textvace.py \
+    --checkpoint models/train/TextVACE_v3_sft/epoch-3.safetensors
+
+# === v2 Glyph 方案（已完成） ===
 # 数据准备
 conda run -n DiffSynth-Studio python scripts/prepare_textvace_data.py
 conda run -n DiffSynth-Studio python scripts/recognize_fonts.py
 conda run -n DiffSynth-Studio python scripts/render_glyph_ocr.py
 
 # 训练
-conda activate DiffSynth-Studio
 bash scripts/train_textvace.sh
-tail -f models/train/TextVACE_sft/training_log.txt  # 监控loss
+tail -f models/train/TextVACE_sft/training_log.txt
 
 # 推理
 conda run -n DiffSynth-Studio python scripts/inference_textvace.py \

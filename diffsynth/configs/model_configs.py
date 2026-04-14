@@ -225,7 +225,7 @@ wan_series = [
         "model_hash": "a61453409b67cd3246cf0c3bebad47ba",
         "model_name": "wan_video_vace",
         "model_class": "diffsynth.models.wan_video_vace.VaceWanModel",
-        "extra_kwargs": {"glyph_channels": 16},
+        "extra_kwargs": {"use_target_text_encoder": True},
         "state_dict_converter": "diffsynth.utils.state_dict_converters.wan_video_vace.VaceWanModelDictConverter"
     },
     {

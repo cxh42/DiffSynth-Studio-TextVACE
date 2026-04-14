@@ -21,7 +21,7 @@ from ..models.wan_video_dit_s2v import rope_precompute
 from ..models.wan_video_text_encoder import WanTextEncoder, HuggingfaceTokenizer
 from ..models.wan_video_vae import WanVideoVAE
 from ..models.wan_video_image_encoder import WanImageEncoder
-from ..models.wan_video_vace import VaceWanModel
+from ..models.wan_video_vace import VaceWanModel, tokenize_target_text
 from ..models.wan_video_motion_controller import WanMotionControllerModel
 from ..models.wan_video_animate_adapter import WanAnimateAdapter
 from ..models.wan_video_mot import MotWanModel
@@ -218,6 +218,7 @@ class WanVideoPipeline(BasePipeline):
         vace_video_mask: Optional[Image.Image] = None,
         vace_reference_image: Optional[Image.Image] = None,
         glyph_video: Optional[list[Image.Image]] = None,
+        target_text: Optional[str] = None,
         vace_scale: Optional[float] = 1.0,
         # Animate
         animate_pose_video: Optional[list[Image.Image]] = None,
@@ -288,7 +289,7 @@ class WanVideoPipeline(BasePipeline):
             "input_video": input_video, "denoising_strength": denoising_strength,
             "control_video": control_video, "reference_image": reference_image,
             "camera_control_direction": camera_control_direction, "camera_control_speed": camera_control_speed, "camera_control_origin": camera_control_origin,
-            "vace_video": vace_video, "vace_video_mask": vace_video_mask, "vace_reference_image": vace_reference_image, "glyph_video": glyph_video, "vace_scale": vace_scale,
+            "vace_video": vace_video, "vace_video_mask": vace_video_mask, "vace_reference_image": vace_reference_image, "glyph_video": glyph_video, "target_text": target_text, "vace_scale": vace_scale,
             "seed": seed, "rand_device": rand_device,
             "height": height, "width": width, "num_frames": num_frames,
             "cfg_scale": cfg_scale, "cfg_merge": cfg_merge,
@@ -664,19 +665,19 @@ class WanVideoUnit_SpeedControl(PipelineUnit):
 class WanVideoUnit_VACE(PipelineUnit):
     def __init__(self):
         super().__init__(
-            input_params=("vace_video", "vace_video_mask", "vace_reference_image", "glyph_video", "vace_scale", "height", "width", "num_frames", "tiled", "tile_size", "tile_stride"),
-            output_params=("vace_context", "glyph_latent", "vace_scale"),
+            input_params=("vace_video", "vace_video_mask", "vace_reference_image", "glyph_video", "target_text", "vace_scale", "height", "width", "num_frames", "tiled", "tile_size", "tile_stride"),
+            output_params=("vace_context", "glyph_latent", "target_text_ids", "vace_scale"),
             onload_model_names=("vae",)
         )
 
     def process(
         self,
         pipe: WanVideoPipeline,
-        vace_video, vace_video_mask, vace_reference_image, glyph_video, vace_scale,
+        vace_video, vace_video_mask, vace_reference_image, glyph_video, target_text, vace_scale,
         height, width, num_frames,
         tiled, tile_size, tile_stride
     ):
-        if vace_video is not None or vace_video_mask is not None or vace_reference_image is not None or glyph_video is not None:
+        if vace_video is not None or vace_video_mask is not None or vace_reference_image is not None or glyph_video is not None or target_text is not None:
             pipe.load_models_to_device(["vae"])
             if vace_video is None:
                 vace_video = torch.zeros((1, 3, num_frames, height, width), dtype=pipe.torch_dtype, device=pipe.device)
@@ -728,9 +729,22 @@ class WanVideoUnit_VACE(PipelineUnit):
                 vace_mask_latents = torch.concat((torch.zeros_like(vace_mask_latents[:, :, :f]), vace_mask_latents), dim=2)
 
             vace_context = torch.concat((vace_video_latents, vace_mask_latents), dim=1)
-            return {"vace_context": vace_context, "glyph_latent": glyph_latent, "vace_scale": vace_scale}
+
+            # Tokenize target text for TargetTextEncoder (v3 mode)
+            target_text_ids = None
+            if target_text is not None and isinstance(target_text, str):
+                vace_model = getattr(pipe, 'vace', None)
+                vocab_size = 8192
+                max_len = 64
+                if vace_model is not None and hasattr(vace_model, 'target_text_encoder'):
+                    vocab_size = vace_model.target_text_encoder.vocab_size
+                    max_len = vace_model.target_text_encoder.max_len
+                ids = tokenize_target_text(target_text, max_len=max_len, vocab_size=vocab_size)
+                target_text_ids = torch.tensor([ids], dtype=torch.long, device=pipe.device)
+
+            return {"vace_context": vace_context, "glyph_latent": glyph_latent, "target_text_ids": target_text_ids, "vace_scale": vace_scale}
         else:
-            return {"vace_context": None, "glyph_latent": None, "vace_scale": vace_scale}
+            return {"vace_context": None, "glyph_latent": None, "target_text_ids": None, "vace_scale": vace_scale}
 
 
 class WanVideoUnit_VAP(PipelineUnit):
@@ -1311,6 +1325,7 @@ def model_fn_wan_video(
     reference_latents = None,
     vace_context = None,
     glyph_latent = None,
+    target_text_ids = None,
     vace_scale = 1.0,
     audio_embeds: Optional[torch.Tensor] = None,
     motion_latents: Optional[torch.Tensor] = None,
@@ -1551,6 +1566,7 @@ def model_fn_wan_video(
         vace_hints = vace(
             x, vace_context, context, t_mod, freqs,
             glyph_latent=glyph_latent,
+            target_text_ids=target_text_ids,
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload
         )
