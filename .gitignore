@@ -2,7 +2,6 @@ outputs/
 
 /data
 /models
-/scripts
 /diffusers
 /.vscode
 *.pkl
