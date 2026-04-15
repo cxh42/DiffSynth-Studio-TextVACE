@@ -28,7 +28,18 @@ def launch_training_task(
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     dataloader = torch.utils.data.DataLoader(dataset, shuffle=True, collate_fn=lambda x: x[0], num_workers=num_workers)
     model.to(device=accelerator.device)
+    # Exclude VAE from DeepSpeed ZeRO-3 wrapping to avoid compatibility issues
+    # Store VAE outside the module tree so DeepSpeed doesn't touch it
+    vae_module = getattr(model.pipe, 'vae', None)
+    if vae_module is not None:
+        del model.pipe._modules['vae']
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
+    if vae_module is not None:
+        vae_module.to(accelerator.device)
+        # Store VAE as a non-module attribute so pipeline code can still use pipe.vae
+        pipe = model.module.pipe if hasattr(model, 'module') else model.pipe
+        # Use object.__setattr__ to bypass nn.Module's __setattr__ which would register it as a submodule
+        object.__setattr__(pipe, 'vae', vae_module)
     initialize_deepspeed_gradient_checkpointing(accelerator)
     # Training log file
     log_path = os.path.join(model_logger.output_path, "training_log.txt")

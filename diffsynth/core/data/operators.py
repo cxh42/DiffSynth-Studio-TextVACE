@@ -155,15 +155,21 @@ class LoadVideo(DataProcessingOperator, FrameSamplerByRateMixin):
     def __call__(self, data: str):
         reader = self.get_reader(data)
         raw_frame_rate = reader.get_meta_data()['fps']
-        num_frames = self.get_num_frames(reader)
         total_raw_frames = reader.count_frames()
+        total_available = self.get_available_num_frames(reader)
+        # Pad short videos with the last frame instead of reducing num_frames
+        num_frames = self.num_frames
         frames = []
         for frame_id in range(num_frames):
-            frame_id = self.map_single_frame_id(frame_id, raw_frame_rate, total_raw_frames)
-            frame = reader.get_data(frame_id)
-            frame = Image.fromarray(frame)
-            frame = self.frame_processor(frame)
-            frames.append(frame)
+            if frame_id < total_available:
+                raw_id = self.map_single_frame_id(frame_id, raw_frame_rate, total_raw_frames)
+                frame = reader.get_data(raw_id)
+                frame = Image.fromarray(frame)
+                frame = self.frame_processor(frame)
+                frames.append(frame)
+            else:
+                # Pad with the last frame
+                frames.append(frames[-1])
         reader.close()
         return frames
 

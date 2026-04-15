@@ -10,7 +10,9 @@ from transformers.utils import ContextManagers
 
 def load_model(model_class, path, config=None, torch_dtype=torch.bfloat16, device="cpu", state_dict_converter=None, use_disk_map=False, module_map=None, vram_config=None, vram_limit=None, state_dict=None):
     config = {} if config is None else config
-    with ContextManagers(get_init_context(torch_dtype=torch_dtype, device=device)):
+    # Skip ZeRO-3 initialization for VAE to avoid compatibility issues
+    skip_zero3 = 'vae' in model_class.__name__.lower() if hasattr(model_class, '__name__') else False
+    with ContextManagers(get_init_context(torch_dtype=torch_dtype, device=device, skip_zero3=skip_zero3)):
         model = model_class(**config)
     # What is `module_map`?
     # This is a module mapping table for VRAM management.
@@ -25,7 +27,11 @@ def load_model(model_class, path, config=None, torch_dtype=torch.bfloat16, devic
                 state_dict = state_dict_converter(state_dict)
             else:
                 state_dict = {i: state_dict[i] for i in state_dict}
-            model.load_state_dict(state_dict, assign=True)
+            if is_deepspeed_zero3_enabled():
+                from transformers.integrations.deepspeed import _load_state_dict_into_zero3_model
+                _load_state_dict_into_zero3_model(model, state_dict)
+            else:
+                model.load_state_dict(state_dict, assign=True)
             model = enable_vram_management(model, module_map, vram_config=vram_config, disk_map=None, vram_limit=vram_limit)
         else:
             disk_map = DiskMap(path, device, state_dict_converter=state_dict_converter)
@@ -88,14 +94,18 @@ def load_model_with_disk_offload(model_class, path, config=None, torch_dtype=tor
     return model
 
 
-def get_init_context(torch_dtype, device):
-    if is_deepspeed_zero3_enabled():
+def get_init_context(torch_dtype, device, skip_zero3=False):
+    if is_deepspeed_zero3_enabled() and not skip_zero3:
         from transformers.modeling_utils import set_zero3_state
         import deepspeed
         # Why do we use "deepspeed.zero.Init"?
         # Weight segmentation of the model can be performed on the CPU side
         # and loading the segmented weights onto the computing card
         init_contexts = [deepspeed.zero.Init(remote_device=device, dtype=torch_dtype), set_zero3_state()]
+    elif skip_zero3:
+        # For models excluded from ZeRO-3 (e.g. VAE), use normal initialization
+        # instead of skip_model_initialization to avoid meta tensor issues
+        init_contexts = []
     else:
         # Why do we use `skip_model_initialization`?
         # It skips the random initialization of model parameters,
