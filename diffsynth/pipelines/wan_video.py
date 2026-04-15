@@ -1577,7 +1577,7 @@ def model_fn_wan_video(
             def custom_forward(*inputs):
                 return vap(block, *inputs)
             return custom_forward
-        
+
         # Block
         for block_id, block in enumerate(dit.blocks):
             if skip_9th_layer:
@@ -1607,8 +1607,8 @@ def model_fn_wan_video(
                     use_gradient_checkpointing_offload,
                     x, context, t_mod, freqs
                 )
-              
-            
+
+
             # VACE
             if vace_context is not None and block_id in vace.vace_layers_mapping:
                 current_vace_hint = vace_hints[vace.vace_layers_mapping[block_id]]

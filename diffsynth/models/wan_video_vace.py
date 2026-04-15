@@ -4,6 +4,31 @@ from .wan_video_dit import DiTBlock, CrossAttention, flash_attention
 from ..core.gradient import gradient_checkpoint_forward
 
 
+class _OffloadToCPU(torch.autograd.Function):
+    """Move tensor to CPU in forward, move gradient to GPU in backward."""
+    @staticmethod
+    def forward(ctx, tensor):
+        ctx.gpu_device = tensor.device
+        return tensor.detach().cpu().requires_grad_(True)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output.to(ctx.gpu_device)
+
+
+class _RestoreToGPU(torch.autograd.Function):
+    """Move CPU tensor back to GPU in forward, move gradient to CPU in backward."""
+    @staticmethod
+    def forward(ctx, tensor, device):
+        ctx.save_for_backward(torch.empty(0))
+        ctx._device_str = str(device)
+        return tensor.to(device)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output.cpu(), None
+
+
 def tokenize_target_text(text, max_len=64, vocab_size=8192):
     """Convert target text string to character-level token IDs.
 
@@ -307,6 +332,16 @@ class VaceWanModel(torch.nn.Module):
                                 torch.nn.init.xavier_uniform_(module.weight)
                                 if module.bias is not None:
                                     torch.nn.init.zeros_(module.bias)
+
+            # Cast re-initialized modules to model dtype (xavier_uniform_ etc. produce float32)
+            target_dtype = next((p.dtype for p in self.parameters() if p.dtype != torch.float32), torch.bfloat16)
+            if hasattr(self, 'glyph_encoder'):
+                self.glyph_encoder.to(dtype=target_dtype)
+            if hasattr(self, 'target_text_encoder'):
+                self.target_text_encoder.to(dtype=target_dtype)
+            for block in self.vace_blocks:
+                if hasattr(block, 'condition_cross_attn'):
+                    block.condition_cross_attn.to(dtype=target_dtype)
 
             return result
         return super().load_state_dict(state_dict, strict=strict, assign=assign)
