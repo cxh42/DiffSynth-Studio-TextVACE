@@ -72,7 +72,7 @@ $$\text{Flickering} = \frac{255 - \frac{1}{T-1}\sum_{t=1}^{T-1}\text{MAE}(f_t, f
 
 ### FVD（Frechet 视频距离）↓
 
-对全部测试样本的编辑视频和 GT 视频，用预训练 **R3D-18**（Kinetics-400 预训练）提取视频级特征，拟合高斯分布后计算 Frechet 距离。
+对测试样本的输出视频的数据集中已有的的高质量编辑后视频，用预训练 **R3D-18**（Kinetics-400 预训练）提取视频级特征，拟合高斯分布后计算 Frechet 距离。
 
 **全局指标**（整个测试集算一个值），视频生成/编辑领域广泛使用的整体质量指标，同时捕捉空间质量和时序连贯性。
 
@@ -82,7 +82,7 @@ $$\text{Flickering} = \frac{255 - \frac{1}{T-1}\sum_{t=1}^{T-1}\text{MAE}(f_t, f
 
 > 文字以外的区域有没有被破坏？
 
-三个指标均只在**非文字区域**（掩码取反）上计算，对比**编辑视频 vs 原始视频**。
+三个指标均只在**非文字区域**（掩码取反）上计算，对比**编辑后视频 vs 原始输入视频**。
 
 ### PSNR（峰值信噪比）↑
 
@@ -96,23 +96,10 @@ $$\text{PSNR}_{\text{bg}} = \frac{1}{T}\sum_{t=1}^{T} 10 \cdot \log_{10}\frac{25
 
 ### LPIPS（深度感知距离）↓
 
-将两帧文字区域像素置为相同值后，用 **LPIPS**（AlexNet backbone, Zhang et al. CVPR 2018, 引用 10000+）计算深度感知距离。能捕捉 PSNR/SSIM 遗漏的感知差异。
+将两帧被掩码的文字区域像素置为相同值后，用 **LPIPS** 计算深度感知距离。能捕捉 PSNR/SSIM 遗漏的感知差异。
 
 ---
 
-## 指标互补性
-
-九个指标各有侧重，缺一不可：
-
-| 场景 | SeqAcc | CharAcc | TTS | Flickering | MUSIQ | PSNR |
-|------|:------:|:-------:|:---:|:----------:|:-----:|:----:|
-| 完美编辑 | 1.0 | 1.0 | 1.0 | 高 | 高 | 高 |
-| 文字正确但帧间闪烁 | 1.0 | 1.0 | **低** | **低** | 中 | 高 |
-| 文字错误但帧间稳定 | **0.0** | **低** | 1.0 | 高 | 中 | 高 |
-| 文字乱码（端到端失败） | **0.0** | **0.0** | 1.0 | 不定 | **低** | **低** |
-| 文字正确但背景被破坏 | 1.0 | 1.0 | 1.0 | 高 | 中 | **低** |
-
----
 
 ### 指标选取依据
 
@@ -136,29 +123,29 @@ $$\text{PSNR}_{\text{bg}} = \frac{1}{T}\sum_{t=1}^{T} 10 \cdot \log_{10}\frac{25
 
 | 指标 | 工具 | 具体计算 |
 |------|------|---------|
-| **SeqAcc** | PP-OCRv5 | 对每帧裁剪文字掩码 bbox 区域跑 OCR，OCR 输出与目标文字**完全匹配**的帧数 / 总帧数 |
-| **CharAcc** | PP-OCRv5 | 对每帧计算 OCR 输出与目标文字的 Levenshtein 编辑距离，`1 - edit_dist / max(len_pred, len_target)`，取所有帧均值 |
-| **TTS** | PP-OCRv5 | 相邻帧 OCR 输出**完全相同**的帧对数 / 总帧对数（120帧 = 119对） |
+| **SeqAcc** | PP-OCRv5 | 对输出视频的每一帧，根据对应帧的掩码取外接矩形裁剪出文字区域，送入 OCR 识别。OCR 输出与目标文字**完全相同**的帧数 / 总帧数。 |
+| **CharAcc** | PP-OCRv5 | 对每一帧的 OCR 输出，计算与目标文字之间的 Levenshtein 编辑距离，归一化为 `1 - 编辑距离 / max(预测长度, 目标长度)`，然后取所有帧的均值。允许部分字符正确（例如目标 "CLOSED"、识别为 "CLOSD"，得分 0.83）。 |
+| **TTS** | PP-OCRv5 | 对第1帧和第2帧、第2帧和第3帧……这样成对比较相邻两帧的 OCR 结果，**完全相同**记 1 否则记 0，取所有 T-1 个帧对的均值。只关心帧间一致性，不关心内容对错。 |
 
-三个指标共用一次 OCR 推理结果。PP-OCRv5：开源、支持中英文 80+ 语言、精度高。OCR 在独立 conda 环境 `paddleocr` 中运行，CPU 模式推理。
+三个指标共用一次 OCR 推理结果。PP-OCRv5 在独立 conda 环境 `paddleocr` 中运行，CPU 模式推理。比较时统一 `strip().upper()` 消除大小写和首尾空格差异。
 
 ### 轴2：视觉质量（3个指标）
 
 | 指标 | 工具 | 具体计算 |
 |------|------|---------|
-| **Flickering** | 无需模型，`cv2.absdiff` | 全帧相邻帧 MAE → `(255 - MAE) / 255` 归一化。↑越高越稳定 |
-| **MUSIQ** | pyiqa 库（`musiq` 模型，KonIQ 预训练） | 全帧 resize 到 max 512px → MUSIQ 逐帧评分 → 取均值。↑越高越好 |
-| **FVD** | PyTorch, R3D-18（Kinetics-400 预训练） | 全测试集编辑视频和 GT 视频提取特征 → 拟合高斯 → Frechet 距离。↓越低越好 |
+| **Flickering** | `cv2.absdiff`（纯像素运算，无模型） | 对第 t 帧和第 t+1 帧取**整幅画面**的像素级绝对差的均值（MAE），对所有 T-1 个帧对取平均得到平均 MAE，然后按 VBench 风格归一化为 `(255 − 平均MAE) / 255`，映射到 0~1。**越高越稳定**（1.0 表示完全无变化）。 |
+| **MUSIQ** | pyiqa 库（`musiq` 模型，KonIQ 预训练） | 对每一帧先 resize 使最大边不超过 512 像素（VBench 做法），然后送入 MUSIQ 模型得到一个 0~100 的质量分，取所有帧均值。评估图像是否清晰锐利、有无模糊/锯齿/伪影。↑越高越好。 |
+| **FVD** | PyTorch, R3D-18（Kinetics-400 预训练） | **全局指标**，整个测试集只算一个分数。对每条输出视频和参考分布中的每条视频（数据集自带的全部高质量编辑后视频，**不按样本 ID 配对**，而是作为整体参考分布），各自用 R3D-18 均匀采样 16 帧、resize 到 112×112，提取 512 维视频级特征。两组特征分别拟合多维高斯分布，计算两分布之间的 Frechet 距离。↓越低越好。 |
 
 ### 轴3：上下文保真度（3个指标）
 
+本轴评估"编辑过程有没有破坏文字以外的内容"。所有指标都**对比输出视频 vs 原始输入视频**，并**只在非文字区域**（掩码取反）上计算。
+
 | 指标 | 工具 | 具体计算 |
 |------|------|---------|
-| **PSNR** | scikit-image / numpy | 文字掩码取反，**只对掩码外区域**计算编辑视频与原始视频的 PSNR，逐帧取均值。↑越高越好 |
-| **SSIM** | scikit-image | 同上，掩码外区域 SSIM，逐帧取均值。↑越高越好 |
-| **LPIPS** | lpips 库（AlexNet backbone） | 将两帧文字区域像素设为相同值后计算 LPIPS 感知距离，逐帧取均值。↓越低越好 |
-
-关键操作：用文字掩码（SAM3 分割生成）排除文字区域，只比较非文字区域。评测的是"编辑过程有没有破坏文字以外的内容"。
+| **PSNR** | numpy | 对每一帧，用该帧掩码取反得到"非文字区域"的布尔掩码，只取输出视频和原始视频在该区域的像素计算 MSE，然后 `PSNR = 10 × log10(255² / MSE)`，取所有帧均值。MSE 为 0 时封顶 100 dB。↑越高越好。 |
+| **SSIM** | scikit-image | 先把**输出视频的文字区域像素替换为原始视频对应像素**，让文字区域在两张图中完全相同（对 SSIM 贡献满分、自然抵消），然后对整幅画面算 SSIM，取所有帧均值。↑越高越好。 |
+| **LPIPS** | lpips 库（AlexNet backbone，Zhang et al. CVPR 2018） | 同 SSIM 的掩码处理：把输出视频的文字区域像素替换为原始视频对应像素，使文字区域贡献 0 距离。再把两帧归一化到 [-1, 1] 送入 LPIPS 得到感知距离，取所有帧均值。↓越低越好。 |
 
 ---
 
@@ -168,15 +155,14 @@ $$\text{PSNR}_{\text{bg}} = \frac{1}{T}\sum_{t=1}^{T} 10 \cdot \log_{10}\frac{25
 |---|------|--------|:---:|------|-----------|
 | 1 | SeqAcc | 文字正确性 | ↑ | PP-OCRv5 | 目标文字字符串 |
 | 2 | CharAcc | 文字正确性 | ↑ | PP-OCRv5 | 目标文字字符串 |
-| 3 | TTS | 文字正确性 | ↑ | PP-OCRv5 | 无（仅需编辑视频） |
-| 4 | Flickering | 视觉质量 | ↑ | cv2.absdiff + 归一化 | 无（仅需编辑视频） |
-| 5 | MUSIQ | 视觉质量 | ↑ | pyiqa（KonIQ 预训练） | 无（仅需编辑视频） |
-| 6 | FVD | 视觉质量 | ↓ | R3D-18（Kinetics-400） | GT 编辑视频 |
+| 3 | TTS | 文字正确性 | ↑ | PP-OCRv5 | 无（仅需编辑后视频） |
+| 4 | Flickering | 视觉质量 | ↑ | cv2.absdiff + 归一化 | 无（仅需编辑后视频） |
+| 5 | MUSIQ | 视觉质量 | ↑ | pyiqa（KonIQ 预训练） | 无（仅需编辑后视频） |
+| 6 | FVD | 视觉质量 | ↓ | R3D-18（Kinetics-400） | 数据集中自带的高质量编辑后视频 |
 | 7 | PSNR | 上下文保真度 | ↑ | scikit-image | 原始视频 + 掩码 |
 | 8 | SSIM | 上下文保真度 | ↑ | scikit-image | 原始视频 + 掩码 |
 | 9 | LPIPS | 上下文保真度 | ↓ | lpips（AlexNet） | 原始视频 + 掩码 |
 
-9 个指标全部开源、可完全自动化、无需人工标注。
 
 ---
 
@@ -185,12 +171,12 @@ $$\text{PSNR}_{\text{bg}} = \frac{1}{T}\sum_{t=1}^{T} 10 \cdot \log_{10}\frac{25
 ```bash
 # Step 1: OCR 提取（paddleocr 环境，CPU 模式）
 PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
-conda run -n paddleocr python scripts/benchmark/ocr_extract.py \
+conda run -n paddleocr python benchmark/ocr_extract.py \
     --video_dir outputs/<method_name>/ \
     --output outputs/<method_name>/ocr_results.json
 
 # Step 2: 全指标评测（DiffSynth-Studio 环境，GPU）
-conda run -n DiffSynth-Studio python scripts/benchmark/evaluate.py \
+conda run -n DiffSynth-Studio python benchmark/evaluate.py \
     --video_dir outputs/<method_name>/ \
     --ocr_results outputs/<method_name>/ocr_results.json
 ```

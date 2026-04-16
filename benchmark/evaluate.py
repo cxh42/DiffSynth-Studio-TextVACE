@@ -1,283 +1,258 @@
 """
-VideoSTE-Bench Evaluation Runner
+ReWording Benchmark Orchestrator
 ==================================
-Runs all 4 evaluation metrics on a set of edited videos and produces
-a comprehensive evaluation report.
+Runs all 9 metrics across 3 axes and writes a consolidated result JSON.
+
+Axis 1: SeqAcc, CharAcc, TTS     (from pre-extracted OCR results)
+Axis 2: Flickering, MUSIQ, FVD   (visual quality, FVD needs reference videos)
+Axis 3: PSNR, SSIM, LPIPS        (non-text region vs original video)
 
 Usage:
-  python benchmark/evaluate.py \
-      --results_dir outputs/textvace_v3_inference/train_samples \
-      --records data/processed/parsed_records.json \
-      --raw_dir data/raw \
-      --output benchmark/results/v3_train.json
+  # Step 1: Extract OCR (paddleocr env)
+  PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
+  conda run -n paddleocr python scripts/benchmark/ocr_extract.py \
+      --video_dir outputs/<method>/ \
+      --mask_dir <mask_dir>/ \
+      --records <records.json> \
+      --output outputs/<method>/ocr_results.json
 
-  python benchmark/evaluate.py \
-      --results_dir outputs/textvace_inference/unseen_final \
-      --records data/inference_processed/inference_records.json \
-      --raw_dir "" \
-      --output benchmark/results/v2_unseen.json \
-      --record_format inference
+  # Step 2: Run all metrics (DiffSynth-Studio env)
+  python scripts/benchmark/evaluate.py \
+      --video_dir outputs/<method>/ \
+      --ocr_results outputs/<method>/ocr_results.json \
+      --orig_dir <orig_dir>/ \
+      --mask_dir <mask_dir>/ \
+      --ref_dir data/raw/edited_videos/
 """
 
 import argparse
 import json
 import os
 import sys
-import time
 
+import cv2
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import load_video_frames, load_mask_frames
 
-from benchmark.metrics.text_accuracy import evaluate_text_accuracy
-from benchmark.metrics.background_preservation import evaluate_background_preservation
-from benchmark.metrics.temporal_consistency import evaluate_temporal_consistency
-from benchmark.metrics.vlm_quality import evaluate_vlm_quality
-from benchmark.metrics.gt_similarity import evaluate_gt_similarity
+import metric_seq_acc
+import metric_char_acc
+import metric_tts
+import metric_flickering
+import metric_musiq
+import metric_fvd
+import metric_psnr
+import metric_ssim
+import metric_lpips
 
 
-def find_edited_video(results_dir, vid_id):
-    """Find the edited video file for a given sample ID."""
-    candidates = [
-        os.path.join(results_dir, f"{vid_id}_generated.mp4"),
-        os.path.join(results_dir, f"{vid_id}.mp4"),
-        os.path.join(results_dir, f"{vid_id}_anchored.mp4"),
-        os.path.join(results_dir, "videos", f"{vid_id}_generated.mp4"),
-        os.path.join(results_dir, "videos", f"{vid_id}.mp4"),
-    ]
-    for c in candidates:
-        if os.path.exists(c):
-            return c
+def run_axis1(ocr_results_path):
+    """Axis 1: Text Correctness."""
+    if not ocr_results_path or not os.path.exists(ocr_results_path):
+        return None, None
+
+    with open(ocr_results_path) as f:
+        ocr_data = json.load(f)
+
+    per_sample = {}
+    seq_all, char_all, tts_all = [], [], []
+
+    for vid_id, data in ocr_data.items():
+        ocr = data["ocr_per_frame"]
+        target = data["target_text"]
+        if not ocr:
+            continue
+
+        seq = metric_seq_acc.compute(ocr, target)
+        char = metric_char_acc.compute(ocr, target)
+        tts = metric_tts.compute(ocr)
+
+        per_sample[vid_id] = {"SeqAcc": seq, "CharAcc": char, "TTS": tts}
+        seq_all.append(seq)
+        char_all.append(char)
+        tts_all.append(tts)
+
+    aggregate = {
+        "SeqAcc": float(np.mean(seq_all)) if seq_all else 0.0,
+        "CharAcc": float(np.mean(char_all)) if char_all else 0.0,
+        "TTS": float(np.mean(tts_all)) if tts_all else 0.0,
+    }
+    return aggregate, per_sample
+
+
+def find_gt_path(gt_dir, vid_id):
+    """Find GT video allowing `_overlay` suffix variant."""
+    p = os.path.join(gt_dir, vid_id + ".mp4")
+    if os.path.exists(p):
+        return p
+    p = os.path.join(gt_dir, vid_id + "_overlay.mp4")
+    if os.path.exists(p):
+        return p
     return None
 
 
-def load_records(records_path, record_format, raw_dir):
-    """Load and normalize records to a common format."""
-    with open(records_path) as f:
-        records = json.load(f)
-
-    normalized = []
-    for rec in records:
-        if record_format == "train":
-            gt_video = os.path.join(raw_dir, rec.get("edited_video", ""))
-            normalized.append({
-                "id": rec["id"],
-                "original_video": os.path.join(raw_dir, rec["original_video"]),
-                "mask_video": os.path.join(raw_dir, rec["mask_video"]),
-                "gt_video": gt_video if os.path.exists(gt_video) else None,
-                "source_text": rec["source_text"],
-                "target_text": rec["target_text"],
-            })
-        elif record_format == "inference":
-            normalized.append({
-                "id": rec["id"],
-                "original_video": rec["video_path"],
-                "mask_video": rec["mask_path"],
-                "gt_video": None,
-                "source_text": rec.get("original_text", ""),
-                "target_text": rec.get("replacement_text", ""),
-            })
-    return normalized
-
-
 def main():
-    parser = argparse.ArgumentParser(description="VideoSTE-Bench Evaluation")
-    parser.add_argument("--results_dir", required=True,
-                        help="Directory containing edited videos (*_generated.mp4)")
-    parser.add_argument("--records", required=True,
-                        help="Path to records JSON file")
-    parser.add_argument("--raw_dir", default="data/raw",
-                        help="Base directory for original/mask videos")
-    parser.add_argument("--record_format", choices=["train", "inference"], default="train",
-                        help="Format of the records file")
-    parser.add_argument("--output", default="benchmark/results/eval_results.json",
-                        help="Output path for results JSON")
-    parser.add_argument("--skip_vlm", action="store_true",
-                        help="Skip VLM evaluation (faster)")
-    parser.add_argument("--skip_clip", action="store_true",
-                        help="Skip CLIP frame consistency (faster)")
-    parser.add_argument("--vlm_model", default="qwen3-vl:32b-instruct",
-                        help="Ollama model for VLM evaluation")
-    parser.add_argument("--ocr_interval", type=int, default=6,
-                        help="Run OCR every N frames")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--video_dir", required=True,
+                        help="Directory with edited output videos (*.mp4)")
+    parser.add_argument("--ocr_results", default=None,
+                        help="OCR results JSON (from ocr_extract.py)")
+    parser.add_argument("--orig_dir", default="data/raw/original_videos",
+                        help="Original (pre-edit) videos directory")
+    parser.add_argument("--mask_dir", default="data/raw/text_masks",
+                        help="Text mask videos directory")
+    parser.add_argument("--ref_dir", default="data/raw/edited_videos",
+                        help="Reference high-quality edited videos (for FVD)")
+    parser.add_argument("--output", default=None,
+                        help="Output JSON (default: video_dir/eval_results.json)")
+    parser.add_argument("--skip_fvd", action="store_true")
+    parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    if args.output is None:
+        args.output = os.path.join(args.video_dir, "eval_results.json")
 
-    # Load records
-    records = load_records(args.records, args.record_format, args.raw_dir)
-    print(f"Loaded {len(records)} records from {args.records}")
+    video_files = sorted([f for f in os.listdir(args.video_dir) if f.endswith(".mp4")])
+    vid_ids = [f.replace("_generated.mp4", "").replace(".mp4", "") for f in video_files]
+    print(f"Evaluating {len(video_files)} videos from {args.video_dir}")
 
-    # Initialize models (reuse across samples)
-    print("Initializing EasyOCR...")
-    import easyocr
-    ocr_engine = easyocr.Reader(["en", "ch_sim"], gpu=True, verbose=False)
+    results = {"per_sample": {}, "aggregate": {}}
 
-    clip_model, clip_processor = None, None
-    if not args.skip_clip:
-        print("Loading CLIP model...")
-        from transformers import CLIPModel, CLIPProcessor
-        clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to("cuda").eval()
-        clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+    # --- Axis 1 ---
+    print("\n=== Axis 1: Text Correctness ===")
+    agg1, per_sample1 = run_axis1(args.ocr_results)
+    if agg1 is not None:
+        results["aggregate"].update(agg1)
+        for vid_id, scores in per_sample1.items():
+            results["per_sample"].setdefault(vid_id, {}).update(scores)
+        print(f"  SeqAcc:  {agg1['SeqAcc']:.4f}")
+        print(f"  CharAcc: {agg1['CharAcc']:.4f}")
+        print(f"  TTS:     {agg1['TTS']:.4f}")
+    else:
+        print("  SKIPPED (no OCR results)")
 
-    # Evaluate each sample
-    all_results = []
-    for i, rec in enumerate(records):
-        vid_id = rec["id"]
-        edited_path = find_edited_video(args.results_dir, vid_id)
+    # --- Axis 2 & 3 ---
+    print("\n=== Axis 2 + 3: Loading videos ===")
+    flicker_all, musiq_all = [], []
+    psnr_all, ssim_all, lpips_all = [], [], []
+    fvd_edited, fvd_ref = [], []
 
-        if edited_path is None:
-            print(f"[{i+1}/{len(records)}] SKIP {vid_id}: no edited video found")
+    for i, (vf, vid_id) in enumerate(zip(video_files, vid_ids)):
+        video_path = os.path.join(args.video_dir, vf)
+        orig_path = os.path.join(args.orig_dir, vid_id + ".mp4")
+        mask_path = os.path.join(args.mask_dir, vid_id + ".mp4")
+
+        if not os.path.exists(orig_path) or not os.path.exists(mask_path):
+            print(f"  [{i+1}] {vid_id}: SKIP (missing orig/mask)")
             continue
 
-        if not os.path.exists(rec["original_video"]) or not os.path.exists(rec["mask_video"]):
-            print(f"[{i+1}/{len(records)}] SKIP {vid_id}: missing original/mask video")
+        edited_frames = load_video_frames(video_path)
+        orig_frames = load_video_frames(orig_path)
+        if not edited_frames or not orig_frames:
             continue
 
-        print(f"[{i+1}/{len(records)}] Evaluating {vid_id}: "
-              f"\"{rec['source_text']}\" -> \"{rec['target_text']}\"")
+        n = min(len(edited_frames), len(orig_frames))
+        edited_frames = edited_frames[:n]
+        orig_frames = orig_frames[:n]
 
-        sample_result = {"id": vid_id, "source_text": rec["source_text"],
-                         "target_text": rec["target_text"]}
+        eh, ew = edited_frames[0].shape[:2]
+        oh, ow = orig_frames[0].shape[:2]
+        if (eh, ew) != (oh, ow):
+            orig_frames = [cv2.resize(f, (ew, eh)) for f in orig_frames]
 
-        # --- Metric 1: Text Accuracy ---
-        t0 = time.time()
-        text_acc = evaluate_text_accuracy(
-            edited_path, rec["mask_video"], rec["target_text"],
-            ocr_engine=ocr_engine, sample_interval=args.ocr_interval,
-        )
-        sample_result["text_accuracy"] = text_acc
-        print(f"  Text Accuracy: word={text_acc['word_accuracy']:.3f}, "
-              f"char={text_acc['char_accuracy']:.3f}, "
-              f"conf={text_acc['ocr_confidence']:.3f} ({time.time()-t0:.1f}s)")
+        mask_frames = load_mask_frames(mask_path, target_h=eh, target_w=ew)
 
-        # --- Metric 2: Background Preservation ---
-        t0 = time.time()
-        bg_pres = evaluate_background_preservation(
-            rec["original_video"], edited_path, rec["mask_video"],
-        )
-        sample_result["background_preservation"] = bg_pres
-        print(f"  Background: PSNR={bg_pres['bg_psnr']:.2f}, "
-              f"SSIM={bg_pres['bg_ssim']:.4f} ({time.time()-t0:.1f}s)")
+        # --- Axis 2 (full frame) ---
+        flicker = metric_flickering.compute(edited_frames)
+        musiq = metric_musiq.compute(edited_frames, device=args.device)
 
-        # --- Metric 3: Temporal Consistency ---
-        t0 = time.time()
-        temp_con = evaluate_temporal_consistency(
-            edited_path, rec["mask_video"],
-            use_clip=not args.skip_clip,
-            clip_model=clip_model, clip_processor=clip_processor,
-        )
-        sample_result["temporal_consistency"] = temp_con
-        clip_str = f", CLIP={temp_con.get('clip_frame_consistency', 0):.4f}" if not args.skip_clip else ""
-        print(f"  Temporal: SSIM={temp_con['text_temporal_ssim']:.4f}"
-              f"{clip_str} ({time.time()-t0:.1f}s)")
+        # --- Axis 3 (non-text region) ---
+        psnr = metric_psnr.compute(orig_frames, edited_frames, mask_frames)
+        ssim = metric_ssim.compute(orig_frames, edited_frames, mask_frames)
+        lpips_s = metric_lpips.compute(orig_frames, edited_frames, mask_frames, device=args.device)
 
-        # --- Metric 4: VLM Quality ---
-        if not args.skip_vlm:
-            t0 = time.time()
-            vlm_score = evaluate_vlm_quality(
-                edited_path, rec["target_text"],
-                model=args.vlm_model,
-            )
-            sample_result["vlm_quality"] = vlm_score
-            seen = vlm_score['seen_texts'][0] if vlm_score['seen_texts'] else '?'
-            print(f"  VLM Quality: score={vlm_score['vlm_score']:.1f}/10, "
-                  f"seen=\"{seen}\" ({time.time()-t0:.1f}s)")
+        flicker_all.append(flicker)
+        musiq_all.append(musiq)
+        psnr_all.append(psnr)
+        ssim_all.append(ssim)
+        lpips_all.append(lpips_s)
 
-        # --- Metric 5: GT Similarity (only if GT exists) ---
-        if rec.get("gt_video") is not None:
-            t0 = time.time()
-            gt_sim = evaluate_gt_similarity(
-                edited_path, rec["gt_video"], rec["mask_video"],
-            )
-            sample_result["gt_similarity"] = gt_sim
-            print(f"  GT Similarity: PSNR={gt_sim['gt_psnr']:.2f}, "
-                  f"SSIM={gt_sim['gt_ssim']:.4f}, "
-                  f"Text-PSNR={gt_sim['gt_text_psnr']:.2f}, "
-                  f"Text-SSIM={gt_sim['gt_text_ssim']:.4f} ({time.time()-t0:.1f}s)")
+        # Collect edited video for FVD (reference distribution loaded separately below)
+        fvd_edited.append(edited_frames)
 
-        all_results.append(sample_result)
+        results["per_sample"].setdefault(vid_id, {}).update({
+            "Flickering": flicker,
+            "MUSIQ": musiq,
+            "PSNR": psnr,
+            "SSIM": ssim,
+            "LPIPS": lpips_s,
+        })
 
-    # --- Aggregate results ---
+        print(f"  [{i+1}/{len(video_files)}] {vid_id}: "
+              f"Flick={flicker:.4f} MUSIQ={musiq:.1f} "
+              f"PSNR={psnr:.1f} SSIM={ssim:.3f} LPIPS={lpips_s:.4f}")
+
+    # Aggregate
+    results["aggregate"]["Flickering"] = float(np.mean(flicker_all)) if flicker_all else 0.0
+    results["aggregate"]["MUSIQ"] = float(np.mean(musiq_all)) if musiq_all else 0.0
+    results["aggregate"]["PSNR"] = float(np.mean(psnr_all)) if psnr_all else 0.0
+    results["aggregate"]["SSIM"] = float(np.mean(ssim_all)) if ssim_all else 0.0
+    results["aggregate"]["LPIPS"] = float(np.mean(lpips_all)) if lpips_all else 0.0
+
+    # FVD: load all reference videos from ref_dir as the target distribution
+    if not args.skip_fvd and len(fvd_edited) >= 2 and os.path.isdir(args.ref_dir):
+        print(f"\n=== Computing FVD ===")
+        ref_files = sorted([f for f in os.listdir(args.ref_dir) if f.endswith(".mp4")])
+        print(f"  Loading {len(ref_files)} reference videos from {args.ref_dir}...")
+        target_h, target_w = fvd_edited[0][0].shape[:2]
+        fvd_ref = []
+        for rf in ref_files:
+            rframes = load_video_frames(os.path.join(args.ref_dir, rf))
+            if not rframes:
+                continue
+            rh, rw = rframes[0].shape[:2]
+            if (target_h, target_w) != (rh, rw):
+                rframes = [cv2.resize(f, (target_w, target_h)) for f in rframes]
+            fvd_ref.append(rframes)
+
+        if len(fvd_ref) >= 2:
+            print(f"  {len(fvd_edited)} edited vs {len(fvd_ref)} reference videos")
+            try:
+                fvd = metric_fvd.compute(fvd_edited, fvd_ref, device=args.device)
+                results["aggregate"]["FVD"] = fvd
+                print(f"  FVD: {fvd:.2f}")
+            except Exception as e:
+                print(f"  FVD failed: {e}")
+                results["aggregate"]["FVD"] = -1.0
+        else:
+            results["aggregate"]["FVD"] = -1.0
+            print(f"  FVD: SKIPPED (only {len(fvd_ref)} reference videos loaded)")
+    else:
+        results["aggregate"]["FVD"] = -1.0
+        print(f"\n=== FVD: SKIPPED ===")
+
+    # Print summary
+    agg = results["aggregate"]
     print(f"\n{'='*60}")
-    print(f"AGGREGATE RESULTS ({len(all_results)} samples)")
+    print(f"ReWording Benchmark Results ({len(video_files)} videos)")
     print(f"{'='*60}")
+    print(f"Axis 1 - Text Correctness:")
+    print(f"  SeqAcc:     {agg.get('SeqAcc', 'N/A')}")
+    print(f"  CharAcc:    {agg.get('CharAcc', 'N/A')}")
+    print(f"  TTS:        {agg.get('TTS', 'N/A')}")
+    print(f"Axis 2 - Visual Quality:")
+    print(f"  Flickering: {agg['Flickering']:.4f} (higher=more stable)")
+    print(f"  MUSIQ:      {agg['MUSIQ']:.2f} (higher=better)")
+    print(f"  FVD:        {agg['FVD']:.2f} (lower=better)")
+    print(f"Axis 3 - Context Fidelity:")
+    print(f"  PSNR:       {agg['PSNR']:.2f} dB (higher=better)")
+    print(f"  SSIM:       {agg['SSIM']:.4f} (higher=better)")
+    print(f"  LPIPS:      {agg['LPIPS']:.4f} (lower=better)")
 
-    if len(all_results) == 0:
-        print("No samples evaluated!")
-        return
-
-    summary = {}
-
-    # Text Accuracy
-    summary["text_accuracy"] = {
-        "word_accuracy": float(np.mean([r["text_accuracy"]["word_accuracy"] for r in all_results])),
-        "char_accuracy": float(np.mean([r["text_accuracy"]["char_accuracy"] for r in all_results])),
-        "ocr_confidence": float(np.mean([r["text_accuracy"]["ocr_confidence"] for r in all_results])),
-        "detection_rate": float(np.mean([r["text_accuracy"]["detection_rate"] for r in all_results])),
-    }
-    print(f"\n[Text Accuracy]")
-    print(f"  Word Accuracy:   {summary['text_accuracy']['word_accuracy']:.4f}")
-    print(f"  Char Accuracy:   {summary['text_accuracy']['char_accuracy']:.4f}")
-    print(f"  OCR Confidence:  {summary['text_accuracy']['ocr_confidence']:.4f}")
-    print(f"  Detection Rate:  {summary['text_accuracy']['detection_rate']:.4f}")
-
-    # Background Preservation
-    summary["background_preservation"] = {
-        "bg_psnr": float(np.mean([r["background_preservation"]["bg_psnr"] for r in all_results])),
-        "bg_ssim": float(np.mean([r["background_preservation"]["bg_ssim"] for r in all_results])),
-    }
-    print(f"\n[Background Preservation]")
-    print(f"  BG-PSNR: {summary['background_preservation']['bg_psnr']:.2f}")
-    print(f"  BG-SSIM: {summary['background_preservation']['bg_ssim']:.4f}")
-
-    # Temporal Consistency
-    tc_keys = ["text_temporal_ssim"]
-    if not args.skip_clip:
-        tc_keys.append("clip_frame_consistency")
-    summary["temporal_consistency"] = {}
-    for k in tc_keys:
-        vals = [r["temporal_consistency"].get(k, 0) for r in all_results]
-        summary["temporal_consistency"][k] = float(np.mean(vals))
-    print(f"\n[Temporal Consistency]")
-    print(f"  Text Temporal SSIM:     {summary['temporal_consistency']['text_temporal_ssim']:.4f}")
-    if not args.skip_clip:
-        print(f"  CLIP Frame Consistency: {summary['temporal_consistency']['clip_frame_consistency']:.4f}")
-
-    # VLM Quality
-    if not args.skip_vlm:
-        vlm_results = [r for r in all_results if "vlm_quality" in r and r["vlm_quality"]["vlm_score"] > 0]
-        if vlm_results:
-            summary["vlm_quality"] = {
-                "vlm_score": float(np.mean([r["vlm_quality"]["vlm_score"] for r in vlm_results])),
-            }
-            print(f"\n[VLM Quality Score]")
-            print(f"  VLM Score:  {summary['vlm_quality']['vlm_score']:.2f}/10")
-
-    # GT Similarity (only for paired samples)
-    gt_results = [r for r in all_results if "gt_similarity" in r]
-    if gt_results:
-        summary["gt_similarity"] = {
-            "gt_psnr": float(np.mean([r["gt_similarity"]["gt_psnr"] for r in gt_results])),
-            "gt_ssim": float(np.mean([r["gt_similarity"]["gt_ssim"] for r in gt_results])),
-            "gt_text_psnr": float(np.mean([r["gt_similarity"]["gt_text_psnr"] for r in gt_results])),
-            "gt_text_ssim": float(np.mean([r["gt_similarity"]["gt_text_ssim"] for r in gt_results])),
-        }
-        print(f"\n[GT Similarity] ({len(gt_results)} paired samples)")
-        print(f"  GT-PSNR:      {summary['gt_similarity']['gt_psnr']:.2f}")
-        print(f"  GT-SSIM:      {summary['gt_similarity']['gt_ssim']:.4f}")
-        print(f"  GT-Text-PSNR: {summary['gt_similarity']['gt_text_psnr']:.2f}")
-        print(f"  GT-Text-SSIM: {summary['gt_similarity']['gt_text_ssim']:.4f}")
-
-    # Save results
-    output_data = {
-        "summary": summary,
-        "n_samples": len(all_results),
-        "per_sample": all_results,
-    }
     with open(args.output, "w") as f:
-        json.dump(output_data, f, indent=2, ensure_ascii=False)
-    print(f"\nResults saved to: {args.output}")
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    print(f"\nResults saved to {args.output}")
 
 
 if __name__ == "__main__":
