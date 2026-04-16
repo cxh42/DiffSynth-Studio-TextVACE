@@ -133,23 +133,44 @@ def _detect_script(text: str) -> str:
     """Detect dominant script to choose appropriate font."""
     for ch in text:
         cp = ord(ch)
+        # CJK Unified Ideographs + extensions
         if 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF:
             return "cjk"
+        # Hangul
         if 0xAC00 <= cp <= 0xD7AF or 0x1100 <= cp <= 0x11FF:
             return "cjk"
+        # Hiragana / Katakana
         if 0x3040 <= cp <= 0x30FF or 0x31F0 <= cp <= 0x31FF:
             return "cjk"
+        # Cyrillic
         if 0x0400 <= cp <= 0x04FF:
             return "cyrillic"
+        # Math symbols + arrows
         if 0x2200 <= cp <= 0x22FF or 0x2190 <= cp <= 0x21FF:
-            return "math"
+            return "symbol"
+        # Roman numerals
+        if 0x2160 <= cp <= 0x217F:
+            return "symbol"
+        # Enclosed alphanumerics (①②③)
+        if 0x2460 <= cp <= 0x24FF:
+            return "symbol"
+        # Dingbats (✓✗✦)
+        if 0x2700 <= cp <= 0x27BF:
+            return "symbol"
+        # Misc symbols (★☆♠♥)
+        if 0x2600 <= cp <= 0x26FF:
+            return "symbol"
+        # Superscripts/subscripts
+        if 0x2070 <= cp <= 0x209F:
+            return "symbol"
     return "latin"
 
 
-# Script-specific font overrides
+# Script-specific font overrides (DejaVu has best Unicode symbol coverage)
 _SCRIPT_FONTS = {
     "cjk": "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     "cyrillic": "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    "symbol": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "math": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 }
 

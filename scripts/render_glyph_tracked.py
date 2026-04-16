@@ -200,7 +200,7 @@ def get_cotracker(device="cuda"):
     return _cotracker_model
 
 
-def track_points(video_tensor, init_points, init_frame_idx, device="cuda"):
+def track_points(video_tensor, init_points, init_frame_idx, device="cuda", max_side=480):
     """Track 4 corner points across all video frames using CoTracker3.
 
     Args:
@@ -208,22 +208,40 @@ def track_points(video_tensor, init_points, init_frame_idx, device="cuda"):
         init_points: (4, 2) numpy array of initial corner points
         init_frame_idx: which frame the points are detected in
         device: cuda or cpu
+        max_side: downscale video if larger than this (saves VRAM)
 
     Returns:
-        tracked_points: (T, 4, 2) numpy array of tracked corner positions
+        tracked_points: (T, 4, 2) numpy array of tracked corner positions (original resolution)
         visibility: (T, 4) boolean array
     """
     model = get_cotracker(device)
 
+    T, H, W, _ = video_tensor.shape
+
+    # Downscale for tracking if video is large (saves VRAM significantly)
+    scale = 1.0
+    if max(H, W) > max_side:
+        scale = max_side / max(H, W)
+        new_H = int(H * scale)
+        new_W = int(W * scale)
+        downscaled = np.stack([
+            cv2.resize(video_tensor[t], (new_W, new_H)) for t in range(T)
+        ])
+        scaled_points = init_points * scale
+    else:
+        downscaled = video_tensor
+        scaled_points = init_points
+        new_H, new_W = H, W
+
     # Prepare video: (1, T, 3, H, W) float
-    video = torch.from_numpy(video_tensor).permute(0, 3, 1, 2).unsqueeze(0).float().to(device)
+    video = torch.from_numpy(downscaled).permute(0, 3, 1, 2).unsqueeze(0).float().to(device)
 
     # Prepare queries: (1, N, 3) where each query is (frame_idx, x, y)
     queries = torch.zeros(1, 4, 3)
     for i in range(4):
         queries[0, i, 0] = float(init_frame_idx)
-        queries[0, i, 1] = float(init_points[i, 0])  # x
-        queries[0, i, 2] = float(init_points[i, 1])  # y
+        queries[0, i, 1] = float(scaled_points[i, 0])  # x
+        queries[0, i, 2] = float(scaled_points[i, 1])  # y
     queries = queries.to(device)
 
     with torch.no_grad():
@@ -233,6 +251,10 @@ def track_points(video_tensor, init_points, init_frame_idx, device="cuda"):
     tracked = pred_tracks[0].cpu().numpy()     # (T, 4, 2)
     visible = pred_visibility[0].cpu().numpy()  # (T, 4)
 
+    # Scale coordinates back to original resolution
+    if scale != 1.0:
+        tracked = tracked / scale
+
     return tracked, visible
 
 
@@ -241,20 +263,33 @@ def track_points(video_tensor, init_points, init_frame_idx, device="cuda"):
 # ---------------------------------------------------------------------------
 
 def render_text_horizontal(text, width, height, font_path):
-    """Render text on a horizontal canvas, white text on black."""
-    img = Image.new("L", (width, height), 0)
+    """Render text on a horizontal canvas, white text on black.
+
+    Uses a larger internal canvas with padding to prevent edge clipping
+    of descenders (g, y, p) and ascenders, then crops to the target size.
+    """
+    # Use a padded canvas to avoid clipping
+    pad = max(height // 2, 20)
+    canvas_w = width + pad * 2
+    canvas_h = height + pad * 2
+    img = Image.new("L", (canvas_w, canvas_h), 0)
     draw = ImageDraw.Draw(img)
 
-    font_size = max(8, height - 4)
+    # Start with font size proportional to target height (80% to leave margin)
+    font_size = max(8, int(height * 0.8))
     try:
         font = ImageFont.truetype(font_path, font_size)
     except (OSError, IOError):
         font = ImageFont.load_default()
 
+    # Measure and adjust font size to fit width
     bbox = draw.textbbox((0, 0), text, font=font)
     text_w = bbox[2] - bbox[0]
-    if text_w > width and text_w > 0:
-        font_size = int(font_size * width / text_w * 0.9)
+    text_h = bbox[3] - bbox[1]
+
+    # Scale down if text is too wide
+    if text_w > width * 0.95 and text_w > 0:
+        font_size = int(font_size * width * 0.9 / text_w)
         font_size = max(8, font_size)
         try:
             font = ImageFont.truetype(font_path, font_size)
@@ -262,12 +297,29 @@ def render_text_horizontal(text, width, height, font_path):
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), text, font=font)
         text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
 
-    text_h = bbox[3] - bbox[1]
-    tx = (width - text_w) // 2
-    ty = (height - text_h) // 2
+    # Scale down if text is too tall
+    if text_h > height * 0.95 and text_h > 0:
+        font_size = int(font_size * height * 0.85 / text_h)
+        font_size = max(8, font_size)
+        try:
+            font = ImageFont.truetype(font_path, font_size)
+        except (OSError, IOError):
+            font = ImageFont.load_default()
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+
+    # Center text on padded canvas (offset by bbox origin for correct positioning)
+    tx = (canvas_w - text_w) // 2 - bbox[0]
+    ty = (canvas_h - text_h) // 2 - bbox[1]
     draw.text((tx, ty), text, fill=255, font=font)
-    return np.array(img)
+
+    # Crop back to target size from center
+    result = np.array(img)
+    result = result[pad:pad + height, pad:pad + width]
+    return result
 
 
 def render_glyph_perspective(target_text, dst_points, frame_h, frame_w, font_path):
@@ -359,18 +411,24 @@ def process_one_sample(
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(output_path, fourcc, fps, (frame_w, frame_h))
 
+    last_good_pts = None
     for fi in range(total_frames):
         pts = tracked_pts[fi]  # (4, 2)
         vis = visibility[fi]   # (4,)
 
-        # Render if at least 2 points visible (CoTracker still outputs
-        # reasonable positions for "invisible" points near frame edges)
+        # Use tracked points if enough are visible, otherwise carry forward
         if vis.sum() >= 2:
-            # Clamp points to frame boundaries
             pts_clamped = pts.copy()
             pts_clamped[:, 0] = np.clip(pts_clamped[:, 0], 0, frame_w - 1)
             pts_clamped[:, 1] = np.clip(pts_clamped[:, 1], 0, frame_h - 1)
+            last_good_pts = pts_clamped
+        elif last_good_pts is not None:
+            # Carry forward last known position to avoid mid-video disappearance
+            pts_clamped = last_good_pts
+        else:
+            pts_clamped = None
 
+        if pts_clamped is not None:
             glyph_frame = render_glyph_perspective(
                 target_text, pts_clamped, frame_h, frame_w, font_path
             )
@@ -445,11 +503,18 @@ def main():
 
         print(f"  [{i+1}/{len(records)}] {vid_id}: \"{source_text}\" -> \"{target_text}\"")
 
-        ok = process_one_sample(
-            ocr, vid_id, video_path, mask_path,
-            target_text, source_text, font_path, output_path,
-            device=args.device,
-        )
+        try:
+            ok = process_one_sample(
+                ocr, vid_id, video_path, mask_path,
+                target_text, source_text, font_path, output_path,
+                device=args.device,
+            )
+        except Exception as e:
+            print(f"    ERROR: {e}")
+            ok = False
+            # Clear CUDA cache after OOM or other errors
+            if "CUDA" in str(e) or "out of memory" in str(e):
+                torch.cuda.empty_cache()
 
         if ok:
             success += 1

@@ -142,21 +142,28 @@ def interpolate_missing(boxes_per_frame):
 # ---------------------------------------------------------------------------
 
 def render_text_horizontal(text, width, height, font_path):
-    """Render text on a horizontal canvas, white text on black."""
-    img = Image.new("L", (width, height), 0)
+    """Render text on a horizontal canvas, white text on black.
+
+    Uses a larger internal canvas with padding to prevent edge clipping.
+    """
+    pad = max(height // 2, 20)
+    canvas_w = width + pad * 2
+    canvas_h = height + pad * 2
+    img = Image.new("L", (canvas_w, canvas_h), 0)
     draw = ImageDraw.Draw(img)
 
-    font_size = max(8, height - 4)
+    font_size = max(8, int(height * 0.8))
     try:
         font = ImageFont.truetype(font_path, font_size)
     except (OSError, IOError):
         font = ImageFont.load_default()
 
-    # Adjust font size to fit width
     bbox = draw.textbbox((0, 0), text, font=font)
     text_w = bbox[2] - bbox[0]
-    if text_w > width and text_w > 0:
-        font_size = int(font_size * width / text_w * 0.9)
+    text_h = bbox[3] - bbox[1]
+
+    if text_w > width * 0.95 and text_w > 0:
+        font_size = int(font_size * width * 0.9 / text_w)
         font_size = max(8, font_size)
         try:
             font = ImageFont.truetype(font_path, font_size)
@@ -164,12 +171,26 @@ def render_text_horizontal(text, width, height, font_path):
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), text, font=font)
         text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
 
-    text_h = bbox[3] - bbox[1]
-    tx = (width - text_w) // 2
-    ty = (height - text_h) // 2
+    if text_h > height * 0.95 and text_h > 0:
+        font_size = int(font_size * height * 0.85 / text_h)
+        font_size = max(8, font_size)
+        try:
+            font = ImageFont.truetype(font_path, font_size)
+        except (OSError, IOError):
+            font = ImageFont.load_default()
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+
+    tx = (canvas_w - text_w) // 2 - bbox[0]
+    ty = (canvas_h - text_h) // 2 - bbox[1]
     draw.text((tx, ty), text, fill=255, font=font)
-    return np.array(img)
+
+    result = np.array(img)
+    result = result[pad:pad + height, pad:pad + width]
+    return result
 
 
 def render_glyph_perspective(target_text, dst_points, frame_h, frame_w, font_path):

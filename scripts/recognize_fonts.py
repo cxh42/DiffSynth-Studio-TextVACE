@@ -27,33 +27,70 @@ import requests
 # Liberation fonts are metric-compatible replacements:
 #   Arial -> Liberation Sans, Times New Roman -> Liberation Serif, Courier New -> Liberation Mono
 FONT_MAP = {
-    # Sans-serif (Liberation Sans = Arial-compatible)
+    # === Sans-serif ===
     "arial": "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     "arial bold": "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    "helvetica": "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "helvetica bold": "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    "verdana": "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    "helvetica": "/usr/share/fonts/opentype/urw-base35/NimbusSans-Regular.otf",
+    "helvetica bold": "/usr/share/fonts/opentype/urw-base35/NimbusSans-Bold.otf",
+    "verdana": "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
     "calibri": "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "trebuchet ms": "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    "trebuchet ms": "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
     "sans-serif": "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    # Serif (Liberation Serif = Times-compatible)
-    "times new roman": "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
-    "times": "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
-    "georgia": "/usr/share/fonts/truetype/freefont/FreeSerif.ttf",
+    "sans-serif bold": "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    # Condensed/Narrow sans
+    "arial narrow": "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Regular.ttf",
+    "condensed": "/usr/share/fonts/opentype/urw-base35/NimbusSansNarrow-Regular.otf",
+    "condensed bold": "/usr/share/fonts/opentype/urw-base35/NimbusSansNarrow-Bold.otf",
+    # === Serif ===
+    "times new roman": "/usr/share/fonts/opentype/urw-base35/NimbusRoman-Regular.otf",
+    "times new roman bold": "/usr/share/fonts/opentype/urw-base35/NimbusRoman-Bold.otf",
+    "times": "/usr/share/fonts/opentype/urw-base35/NimbusRoman-Regular.otf",
+    "georgia": "/usr/share/fonts/opentype/urw-base35/P052-Roman.otf",
+    "palatino": "/usr/share/fonts/opentype/urw-base35/P052-Roman.otf",
+    "book antiqua": "/usr/share/fonts/opentype/urw-base35/P052-Roman.otf",
+    "bookman": "/usr/share/fonts/opentype/urw-base35/URWBookman-Light.otf",
+    "bookman bold": "/usr/share/fonts/opentype/urw-base35/URWBookman-Demi.otf",
+    "century schoolbook": "/usr/share/fonts/opentype/urw-base35/C059-Roman.otf",
     "serif": "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
-    # Monospace (Liberation Mono = Courier-compatible)
-    "courier": "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-    "courier new": "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    "serif bold": "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+    # === Monospace ===
+    "courier": "/usr/share/fonts/opentype/urw-base35/NimbusMonoPS-Regular.otf",
+    "courier new": "/usr/share/fonts/opentype/urw-base35/NimbusMonoPS-Regular.otf",
+    "courier new bold": "/usr/share/fonts/opentype/urw-base35/NimbusMonoPS-Bold.otf",
     "monospace": "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-    # Display / Bold
-    "impact": "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-    "comic sans ms": "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-    "comic sans": "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-    # CJK / Asian (handled by detect_script_font but also map explicit names)
+    # === Display / Bold / Impact ===
+    "impact": "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Bold.ttf",
+    "impact bold": "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Bold.ttf",
+    "franklin gothic": "/usr/share/fonts/opentype/urw-base35/NimbusSans-Bold.otf",
+    # === Script / Handwritten / Cursive ===
+    "script": "/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf",
+    "script mt bold": "/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf",
+    "cursive": "/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf",
+    "handwritten": "/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf",
+    "calligraphy": "/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf",
+    "zapf chancery": "/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf",
+    "comic sans ms": "/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf",
+    "comic sans": "/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf",
+    "brush script": "/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf",
+    # === Gothic / Avant Garde ===
+    "avant garde": "/usr/share/fonts/opentype/urw-base35/URWGothic-Book.otf",
+    "avant garde bold": "/usr/share/fonts/opentype/urw-base35/URWGothic-Demi.otf",
+    "century gothic": "/usr/share/fonts/opentype/urw-base35/URWGothic-Book.otf",
+    "futura": "/usr/share/fonts/opentype/urw-base35/URWGothic-Book.otf",
+    # === Italic variants ===
+    "italic": "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf",
+    "sans-serif italic": "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf",
+    "serif italic": "/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf",
+    # === Symbols / Dingbats ===
+    "symbol": "/usr/share/fonts/opentype/urw-base35/StandardSymbolsPS.otf",
+    "dingbats": "/usr/share/fonts/opentype/urw-base35/D050000L.otf",
+    # === CJK ===
     "simhei": "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     "microsoft yahei": "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     "malgun gothic": "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     "noto sans cjk": "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "songti": "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+    "simsun": "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
 }
 
 DEFAULT_FONT = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
@@ -99,17 +136,27 @@ def resolve_font_path(font_name: str) -> str:
     # Direct match
     if key in FONT_MAP:
         return FONT_MAP[key]
-    # Partial match
+    # Partial match (try both directions)
     for k, v in FONT_MAP.items():
         if k in key or key in k:
             return v
-    # Check if it's "bold" variant
+    # Style keyword fallback
+    if "script" in key or "handwrit" in key or "cursive" in key or "brush" in key or "calligraph" in key:
+        return "/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf"
+    if "gothic" in key or "futura" in key or "avant" in key:
+        return "/usr/share/fonts/opentype/urw-base35/URWGothic-Book.otf"
+    if "condensed" in key or "narrow" in key:
+        return "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Bold.ttf"
+    if "italic" in key:
+        return "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf"
+    if "bold" in key and "serif" in key and "sans" not in key:
+        return "/usr/share/fonts/opentype/urw-base35/NimbusRoman-Bold.otf"
     if "bold" in key:
-        return "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        return "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
     if "serif" in key and "sans" not in key:
-        return "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+        return "/usr/share/fonts/opentype/urw-base35/NimbusRoman-Regular.otf"
     if "mono" in key:
-        return "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+        return "/usr/share/fonts/opentype/urw-base35/NimbusMonoPS-Regular.otf"
     return DEFAULT_FONT
 
 
@@ -151,10 +198,17 @@ def query_vlm(image_bytes: bytes, source_text: str, model: str = "qwen3-vl:8b-in
 
     prompt = (
         f'This image shows the text "{source_text}" from a video frame. '
-        f'What standard font does this text most closely resemble? '
-        f'Reply with ONLY the font name, nothing else. No explanation. '
-        f'Examples: Arial, Arial Bold, Times New Roman, Helvetica, Courier New, '
-        f'Impact, Georgia, Verdana, Calibri, Trebuchet MS.'
+        f'Identify the font style. Consider these categories:\n'
+        f'- Sans-serif regular (clean, no serifs): Arial, Helvetica, Verdana, Calibri\n'
+        f'- Sans-serif bold (thick, heavy): Arial Bold, Helvetica Bold, Impact, Franklin Gothic\n'
+        f'- Sans-serif condensed (tall and narrow): Arial Narrow, Condensed Bold\n'
+        f'- Serif regular (with serifs): Times New Roman, Georgia, Palatino, Bookman\n'
+        f'- Serif bold: Times New Roman Bold, Georgia Bold\n'
+        f'- Monospace (fixed-width): Courier New, Courier New Bold\n'
+        f'- Script/Handwritten (cursive, flowing): Script, Brush Script, Cursive, Handwritten\n'
+        f'- Gothic/Geometric (round, modern): Century Gothic, Futura, Avant Garde\n'
+        f'- Italic (slanted): Italic, Sans-serif Italic\n'
+        f'Reply with ONLY the font name from the examples above. No explanation.'
     )
 
     try:
