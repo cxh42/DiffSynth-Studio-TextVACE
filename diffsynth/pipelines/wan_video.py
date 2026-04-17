@@ -1570,13 +1570,39 @@ def model_fn_wan_video(
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload
         )
+        # Offload hints to CPU to save GPU memory during DiT blocks (same as PISCO line 1530)
+        if use_gradient_checkpointing_offload:
+            vace_hints = [h.cpu() for h in vace_hints]
+            torch.cuda.empty_cache()
     if tea_cache_update:
         x = tea_cache.update(x)
     else:
+        from diffsynth.models.wan_video_vace import _OffloadToCPU, _RestoreToGPU
+
+        def create_custom_forward(module):
+            def custom_forward(*inputs):
+                return module(*inputs)
+            return custom_forward
+
+        def create_custom_forward_offload(module, gpu_device):
+            """Checkpoint wrapper that restores CPU inputs to GPU before running the block."""
+            def custom_forward(x_cpu, ctx_cpu, tmod_arg, freqs_cpu):
+                x_gpu = _RestoreToGPU.apply(x_cpu, gpu_device)
+                ctx_gpu = _RestoreToGPU.apply(ctx_cpu, gpu_device)
+                freqs_gpu = _RestoreToGPU.apply(freqs_cpu, gpu_device)
+                return module(x_gpu, ctx_gpu, tmod_arg, freqs_gpu)
+            return custom_forward
+
         def create_custom_forward_vap(block, vap):
             def custom_forward(*inputs):
                 return vap(block, *inputs)
             return custom_forward
+
+        # Pre-offload shared tensors to CPU (same as PISCO lines 1567-1570)
+        if use_gradient_checkpointing_offload:
+            _gpu_dev = x.device
+            context_cpu = _OffloadToCPU.apply(context).requires_grad_(True)
+            freqs_cpu = _OffloadToCPU.apply(freqs).requires_grad_(True)
 
         # Block
         for block_id, block in enumerate(dit.blocks):
@@ -1590,28 +1616,42 @@ def model_fn_wan_video(
                         x, x_vap = torch.utils.checkpoint.checkpoint(
                             create_custom_forward_vap(block, vap),
                             x, context, t_mod, freqs, x_vap, context_vap, t_mod_vap, freqs_vap, block_id,
-                            use_reentrant=False
+                            use_reentrant=True,
                         )
                 elif use_gradient_checkpointing:
                     x, x_vap = torch.utils.checkpoint.checkpoint(
                         create_custom_forward_vap(block, vap),
                         x, context, t_mod, freqs, x_vap, context_vap, t_mod_vap, freqs_vap, block_id,
-                        use_reentrant=False
+                        use_reentrant=True,
                     )
                 else:
                     x, x_vap = vap(block, x, context, t_mod, freqs, x_vap, context_vap, t_mod_vap, freqs_vap, block_id)
             else:
-                x = gradient_checkpoint_forward(
-                    block,
-                    use_gradient_checkpointing,
-                    use_gradient_checkpointing_offload,
-                    x, context, t_mod, freqs
-                )
-
+                if use_gradient_checkpointing_offload:
+                    x_cpu = _OffloadToCPU.apply(x).requires_grad_(True)
+                    with torch.autograd.graph.save_on_cpu():
+                        x = torch.utils.checkpoint.checkpoint(
+                            create_custom_forward_offload(block, _gpu_dev),
+                            x_cpu, context_cpu, t_mod, freqs_cpu,
+                            use_reentrant=True,
+                        )
+                    del x_cpu
+                elif use_gradient_checkpointing:
+                    x = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(block),
+                        x, context, t_mod, freqs,
+                        use_reentrant=True,
+                    )
+                else:
+                    x = block(x, context, t_mod, freqs)
 
             # VACE
             if vace_context is not None and block_id in vace.vace_layers_mapping:
                 current_vace_hint = vace_hints[vace.vace_layers_mapping[block_id]]
+                if not isinstance(current_vace_hint, torch.Tensor):
+                    pass
+                elif current_vace_hint.device != x.device:
+                    current_vace_hint = current_vace_hint.to(x.device)
                 x = x + current_vace_hint * vace_scale
             
             # Animate

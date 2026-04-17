@@ -100,10 +100,6 @@ class VaceWanAttentionBlock(DiTBlock):
     def forward(self, c, x, context, t_mod, freqs, condition_tokens=None):
         if self.block_id == 0:
             c = self.before_proj(c) + x
-            all_c = []
-        else:
-            all_c = list(torch.unbind(c))
-            c = all_c.pop(-1)
         c = super().forward(c, context, t_mod, freqs)
 
         # Condition cross-attention (injected after text cross-attn + FFN)
@@ -112,9 +108,7 @@ class VaceWanAttentionBlock(DiTBlock):
             c = self.condition_cross_attn(c, condition_tokens)
 
         c_skip = self.after_proj(c)
-        all_c += [c_skip, c]
-        c = torch.stack(all_c)
-        return c
+        return c_skip, c
 
 
 class GlyphEncoder(nn.Module):
@@ -367,13 +361,14 @@ class VaceWanModel(torch.nn.Module):
         elif target_text_ids is not None and hasattr(self, 'target_text_encoder'):
             condition_tokens = self.target_text_encoder(target_text_ids)
 
+        hints = []
         for block in self.vace_blocks:
-            c = gradient_checkpoint_forward(
+            result = gradient_checkpoint_forward(
                 block,
                 use_gradient_checkpointing,
                 use_gradient_checkpointing_offload,
                 c, x, context, t_mod, freqs, condition_tokens
             )
-
-        hints = torch.unbind(c)[:-1]
+            c_skip, c = result
+            hints.append(c_skip)
         return hints

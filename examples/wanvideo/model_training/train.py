@@ -179,14 +179,22 @@ if __name__ == "__main__":
     # Load checkpoint from a previous training stage (e.g., 49f → 121f)
     if args.model_checkpoint_path is not None:
         from safetensors.torch import load_file
+        from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
         ckpt_state = load_file(args.model_checkpoint_path)
         prefix = args.remove_prefix_in_ckpt or ""
         if prefix:
             ckpt_state = {prefix + k: v for k, v in ckpt_state.items()}
-        missing, unexpected = model.load_state_dict(ckpt_state, strict=False)
-        loaded = len(ckpt_state) - len(unexpected)
-        if accelerator.is_main_process:
-            print(f"Loaded {loaded} params from {args.model_checkpoint_path} (missing={len(missing)}, unexpected={len(unexpected)})")
+        if is_deepspeed_zero3_enabled():
+            # ZeRO-3: parameters are partitioned (shape [0]), use specialized loader
+            from transformers.integrations.deepspeed import _load_state_dict_into_zero3_model
+            _load_state_dict_into_zero3_model(model, ckpt_state)
+            if accelerator.is_main_process:
+                print(f"Loaded {len(ckpt_state)} params from {args.model_checkpoint_path} (ZeRO-3 mode)")
+        else:
+            missing, unexpected = model.load_state_dict(ckpt_state, strict=False)
+            loaded = len(ckpt_state) - len(unexpected)
+            if accelerator.is_main_process:
+                print(f"Loaded {loaded} params from {args.model_checkpoint_path} (missing={len(missing)}, unexpected={len(unexpected)})")
 
     model_logger = ModelLogger(
         args.output_path,
