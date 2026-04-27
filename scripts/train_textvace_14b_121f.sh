@@ -15,11 +15,11 @@ export ACCELERATE_DEEPSPEED_ZERO3_INIT=false
 
 find . -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
-STAGE1_CKPT="./models/train/TextVACE_14B_sft_49f/epoch-4.safetensors"
+STAGE1_CKPT="${CKPT_OVERRIDE:-./models/train/TextVACE_14B_sft_49f/epoch-4.safetensors}"
 STAGE2_OUTPUT="./models/train/TextVACE_14B_sft_121f"
 
 if [ ! -f "${STAGE1_CKPT}" ]; then
-  echo "ERROR: Stage 1 checkpoint not found at ${STAGE1_CKPT}"
+  echo "ERROR: checkpoint not found at ${STAGE1_CKPT}"
   exit 1
 fi
 
@@ -40,12 +40,14 @@ accelerate launch --config_file examples/wanvideo/model_training/full/accelerate
   --model_id_with_origin_paths "Wan-AI/Wan2.1-VACE-14B:diffusion_pytorch_model*.safetensors,Wan-AI/Wan2.1-VACE-14B:models_t5_umt5-xxl-enc-bf16.pth,Wan-AI/Wan2.1-VACE-14B:Wan2.1_VAE.pth" \
   --tokenizer_path "models/Wan-AI/Wan2.1-VACE-14B/google/umt5-xxl" \
   --learning_rate 1e-5 \
-  --num_epochs 1 \
+  --num_epochs 2 \
   --remove_prefix_in_ckpt "pipe.vace." \
   --output_path "${STAGE2_OUTPUT}" \
   --trainable_models "vace" \
   --extra_inputs "vace_video,vace_video_mask,glyph_video" \
   --use_gradient_checkpointing_offload \
+  --save_steps 20 \
+  --resume_step "${RESUME_STEP:-0}" \
   --model_checkpoint_path "${STAGE1_CKPT}"
 
 echo "=========================================="

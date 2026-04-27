@@ -51,9 +51,20 @@ def launch_training_task(
     else:
         log_file = None
 
+    total_target = num_epochs * len(dataloader)
+    reached_target = False
     for epoch_id in range(num_epochs):
-        progress = tqdm(dataloader, desc=f"Epoch {epoch_id+1}/{num_epochs}")
-        for step_id, data in enumerate(progress):
+        if reached_target:
+            break
+        progress = tqdm(
+            total=total_target,
+            initial=model_logger.num_steps,
+            desc=f"Epoch {epoch_id+1}/{num_epochs}",
+        )
+        for step_id, data in enumerate(dataloader):
+            if model_logger.num_steps >= total_target:
+                reached_target = True
+                break
             with accelerator.accumulate(model):
                 optimizer.zero_grad()
                 if dataset.load_from_cache:
@@ -67,10 +78,12 @@ def launch_training_task(
 
                 # Log loss
                 loss_val = loss.item()
+                progress.update(1)
                 progress.set_postfix(loss=f"{loss_val:.4f}")
                 if accelerator.is_main_process and log_file is not None and (model_logger.num_steps % 10 == 0 or model_logger.num_steps <= 5):
                     log_file.write(f"epoch={epoch_id+1} step={model_logger.num_steps} loss={loss_val:.6f}\n")
                     log_file.flush()
+        progress.close()
         if save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
         if accelerator.is_main_process and log_file is not None:

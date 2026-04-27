@@ -1,6 +1,6 @@
 """
-TextVACE 14B Inference on training data with the trained checkpoint.
-Uses original videos + masks + glyph_videos from training data.
+TextVACE 14B Inference. Reads a metadata CSV, runs pipeline per row.
+Supports multi-GPU sharding via --worker_rank / --num_workers (one process per GPU).
 """
 
 import os
@@ -11,23 +11,30 @@ import json
 from PIL import Image
 from diffsynth.pipelines.wan_video import WanVideoPipeline, ModelConfig
 
-# ---- Config ----
-DATA_DIR = "data"
+# ---- Defaults ----
+DATA_DIR_DEFAULT = "data/inference_new/inference_data"
+METADATA_DEFAULT = "data/inference_new/inference_data/metadata.csv"
 MODEL_BASE = "models/Wan-AI/Wan2.1-VACE-14B"
-CHECKPOINT = "models/train/TextVACE_14B_sft/epoch-4.safetensors"
+CHECKPOINT_DEFAULT = "models/train/TextVACE_14B_sft_121f/step-576.safetensors"
 TOKENIZER_PATH = "models/Wan-AI/Wan2.1-VACE-14B/google/umt5-xxl"
-OUTPUT_DIR = "outputs/textvace_14b_inference"
+OUTPUT_DIR_DEFAULT = "outputs/inference_full_step576"
 
-HEIGHT = 480
-WIDTH = 832
-NUM_FRAMES = 49
+HEIGHT_DEFAULT = 720
+WIDTH_DEFAULT = 1280
+NUM_FRAMES_DEFAULT = 121
 NUM_INFERENCE_STEPS = 50
 CFG_SCALE = 5.0
 SEED = 42
 
 
 def load_video_frames(video_path, target_frames=None, resize=None):
-    """Load video as list of PIL Images, uniformly sampled to target_frames, optionally resized."""
+    """Load video as list of PIL Images, optionally resized.
+
+    If target_frames is set:
+      - Longer videos are uniformly subsampled to target_frames.
+      - Shorter videos are right-padded by repeating the last frame
+        (matches training-side LoadVideo in diffsynth/core/data/operators.py).
+    """
     import cv2
     cap = cv2.VideoCapture(video_path)
     all_frames = []
@@ -46,6 +53,11 @@ def load_video_frames(video_path, target_frames=None, resize=None):
         import numpy as np
         indices = np.linspace(0, len(all_frames) - 1, target_frames, dtype=int)
         all_frames = [all_frames[i] for i in indices]
+    elif target_frames and len(all_frames) < target_frames:
+        if not all_frames:
+            raise ValueError(f"empty video: {video_path}")
+        last = all_frames[-1]
+        all_frames.extend([last] * (target_frames - len(all_frames)))
 
     return all_frames
 
@@ -78,16 +90,26 @@ def save_video(frames, output_path, fps=24):
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=str, default=CHECKPOINT)
-    parser.add_argument("--output_dir", type=str, default=OUTPUT_DIR)
-    parser.add_argument("--num_samples", type=int, default=None, help="Limit number of samples")
-    parser.add_argument("--gpu", type=int, default=0, help="GPU to use")
+    parser.add_argument("--data_dir", type=str, default=DATA_DIR_DEFAULT, help="Base dir; CSV paths resolve relative to this.")
+    parser.add_argument("--metadata", type=str, default=METADATA_DEFAULT, help="Path to metadata CSV.")
+    parser.add_argument("--checkpoint", type=str, default=CHECKPOINT_DEFAULT)
+    parser.add_argument("--output_dir", type=str, default=OUTPUT_DIR_DEFAULT)
+    parser.add_argument("--num_samples", type=int, default=None, help="Limit number of samples (after sharding).")
+    parser.add_argument("--gpu", type=int, default=0, help="cuda:N. Usually 0 because CUDA_VISIBLE_DEVICES isolates per-worker.")
+    parser.add_argument("--worker_rank", type=int, default=0, help="Worker index in [0, num_workers).")
+    parser.add_argument("--num_workers", type=int, default=1, help="Total parallel workers (one process per GPU).")
+    parser.add_argument("--height", type=int, default=HEIGHT_DEFAULT)
+    parser.add_argument("--width", type=int, default=WIDTH_DEFAULT)
+    parser.add_argument("--num_frames", type=int, default=NUM_FRAMES_DEFAULT)
     args = parser.parse_args()
+
+    if args.num_workers < 1 or not (0 <= args.worker_rank < args.num_workers):
+        raise ValueError(f"bad sharding: rank={args.worker_rank}, num_workers={args.num_workers}")
 
     os.makedirs(args.output_dir, exist_ok=True)
     device = f"cuda:{args.gpu}"
 
-    print(f"Loading pipeline on {device}...")
+    print(f"[rank {args.worker_rank}/{args.num_workers}] Loading pipeline on {device}...")
 
     # Model configs: base 14B (without trained checkpoint - load separately)
     import glob
@@ -118,32 +140,35 @@ def main():
 
     # Read metadata
     metadata = []
-    with open(os.path.join(DATA_DIR, "metadata.csv")) as f:
+    with open(args.metadata) as f:
         reader = csv.DictReader(f)
         for row in reader:
             metadata.append(row)
 
-    print(f"Loaded {len(metadata)} samples")
+    total = len(metadata)
+    # Shard: this worker takes rows where idx % num_workers == worker_rank
+    metadata = [row for idx, row in enumerate(metadata) if idx % args.num_workers == args.worker_rank]
+    print(f"[rank {args.worker_rank}/{args.num_workers}] {len(metadata)}/{total} samples assigned")
 
     if args.num_samples:
         metadata = metadata[:args.num_samples]
 
     for idx, row in enumerate(metadata):
-        video_id = os.path.basename(row["vace_video"]).replace(".mp4", "")
+        video_id = row.get("id") or os.path.basename(row["vace_video"]).replace(".mp4", "")
         output_path = os.path.join(args.output_dir, f"{video_id}.mp4")
 
         if os.path.exists(output_path):
-            print(f"[{idx+1}/{len(metadata)}] SKIP {video_id} (exists)")
+            print(f"[rank {args.worker_rank}] [{idx+1}/{len(metadata)}] SKIP {video_id} (exists)")
             continue
 
-        print(f"[{idx+1}/{len(metadata)}] Processing {video_id}: {row['prompt']}")
+        print(f"[rank {args.worker_rank}] [{idx+1}/{len(metadata)}] Processing {video_id}: {row['prompt']}")
 
         try:
-            # Load input videos, sample to NUM_FRAMES, resize to target resolution
-            target_size = (HEIGHT, WIDTH)  # (h, w)
-            vace_video = load_video_frames(os.path.join(DATA_DIR, row["vace_video"]), target_frames=NUM_FRAMES, resize=target_size)
-            vace_mask = load_video_frames(os.path.join(DATA_DIR, row["vace_video_mask"]), target_frames=NUM_FRAMES, resize=target_size)
-            glyph = load_video_frames(os.path.join(DATA_DIR, row["glyph_video"]), target_frames=NUM_FRAMES, resize=target_size)
+            # Load input videos, sample to num_frames, resize to target resolution
+            target_size = (args.height, args.width)  # (h, w)
+            vace_video = load_video_frames(os.path.join(args.data_dir, row["vace_video"]), target_frames=args.num_frames, resize=target_size)
+            vace_mask = load_video_frames(os.path.join(args.data_dir, row["vace_video_mask"]), target_frames=args.num_frames, resize=target_size)
+            glyph = load_video_frames(os.path.join(args.data_dir, row["glyph_video"]), target_frames=args.num_frames, resize=target_size)
 
             # Run inference
             output_frames = pipe(
@@ -153,9 +178,9 @@ def main():
                 vace_video_mask=vace_mask,
                 glyph_video=glyph,
                 seed=SEED,
-                height=HEIGHT,
-                width=WIDTH,
-                num_frames=NUM_FRAMES,
+                height=args.height,
+                width=args.width,
+                num_frames=args.num_frames,
                 cfg_scale=CFG_SCALE,
                 num_inference_steps=NUM_INFERENCE_STEPS,
                 tiled=True,
@@ -163,15 +188,15 @@ def main():
 
             # Save output
             save_video(output_frames, output_path)
-            print(f"  Saved: {output_path}")
+            print(f"[rank {args.worker_rank}]   Saved: {output_path}")
 
         except Exception as e:
-            print(f"  ERROR: {e}")
+            print(f"[rank {args.worker_rank}]   ERROR on {video_id}: {e}")
             import traceback
             traceback.print_exc()
             continue
 
-    print(f"\nDone! Results in {args.output_dir}")
+    print(f"[rank {args.worker_rank}/{args.num_workers}] Done. Outputs in {args.output_dir}")
 
 
 if __name__ == "__main__":
