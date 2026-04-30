@@ -101,6 +101,13 @@ def main():
     parser.add_argument("--height", type=int, default=HEIGHT_DEFAULT)
     parser.add_argument("--width", type=int, default=WIDTH_DEFAULT)
     parser.add_argument("--num_frames", type=int, default=NUM_FRAMES_DEFAULT)
+    parser.add_argument("--no_load_vace_ckpt", action="store_true",
+        help="Skip loading the trained VACE checkpoint (zero-shot Wan2.1-VACE-14B baseline).")
+    parser.add_argument("--no_glyph", action="store_true",
+        help="Do not pass glyph_video to the pipeline (for non-GlyphVACE baselines).")
+    parser.add_argument("--prompt_template", type=str, default=None,
+        help="Optional Python str.format template; if set, prompt = template.format(**row). "
+             "Example: 'Change {source_text} to {target_text}; preserve everything else.'")
     args = parser.parse_args()
 
     if args.num_workers < 1 or not (0 <= args.worker_rank < args.num_workers):
@@ -130,13 +137,16 @@ def main():
     )
 
     # Load trained VACE checkpoint on top of base VACE
-    print(f"Loading VACE checkpoint: {args.checkpoint}")
-    vace_state_dict = load_state_dict(args.checkpoint)
-    load_result = pipe.vace.load_state_dict(vace_state_dict, strict=False)
-    print(f"  Loaded {len(vace_state_dict)} keys, missing: {len(load_result.missing_keys)}, unexpected: {len(load_result.unexpected_keys)}")
-    if load_result.unexpected_keys:
-        print(f"  Unexpected keys: {load_result.unexpected_keys[:5]}...")
-    del vace_state_dict
+    if args.no_load_vace_ckpt:
+        print("[baseline] Skipping trained VACE checkpoint load (zero-shot Wan2.1-VACE-14B).")
+    else:
+        print(f"Loading VACE checkpoint: {args.checkpoint}")
+        vace_state_dict = load_state_dict(args.checkpoint)
+        load_result = pipe.vace.load_state_dict(vace_state_dict, strict=False)
+        print(f"  Loaded {len(vace_state_dict)} keys, missing: {len(load_result.missing_keys)}, unexpected: {len(load_result.unexpected_keys)}")
+        if load_result.unexpected_keys:
+            print(f"  Unexpected keys: {load_result.unexpected_keys[:5]}...")
+        del vace_state_dict
 
     # Read metadata
     metadata = []
@@ -161,18 +171,19 @@ def main():
             print(f"[rank {args.worker_rank}] [{idx+1}/{len(metadata)}] SKIP {video_id} (exists)")
             continue
 
-        print(f"[rank {args.worker_rank}] [{idx+1}/{len(metadata)}] Processing {video_id}: {row['prompt']}")
+        prompt_str = args.prompt_template.format(**row) if args.prompt_template else row["prompt"]
+        print(f"[rank {args.worker_rank}] [{idx+1}/{len(metadata)}] Processing {video_id}: {prompt_str}")
 
         try:
             # Load input videos, sample to num_frames, resize to target resolution
             target_size = (args.height, args.width)  # (h, w)
             vace_video = load_video_frames(os.path.join(args.data_dir, row["vace_video"]), target_frames=args.num_frames, resize=target_size)
             vace_mask = load_video_frames(os.path.join(args.data_dir, row["vace_video_mask"]), target_frames=args.num_frames, resize=target_size)
-            glyph = load_video_frames(os.path.join(args.data_dir, row["glyph_video"]), target_frames=args.num_frames, resize=target_size)
+            glyph = None if args.no_glyph else load_video_frames(os.path.join(args.data_dir, row["glyph_video"]), target_frames=args.num_frames, resize=target_size)
 
             # Run inference
             output_frames = pipe(
-                prompt=row["prompt"],
+                prompt=prompt_str,
                 negative_prompt="",
                 vace_video=vace_video,
                 vace_video_mask=vace_mask,
